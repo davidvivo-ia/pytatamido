@@ -1405,14 +1405,50 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         px_, py_ = -fy_, fx_
         return lambda a, b: (hd[0] + fx_ * a + px_ * b, hd[1] + fy_ * a + py_ * b)
 
+    def arm_ik(sh, el0, hd0):
+        """Brazo de huesos fijos (cinemática inversa de dos huesos). El esqueleto de poses coloca codo y mano
+        libremente (de 30 a 85 cm de brazo según la pose); aquí el brazo y el antebrazo miden lo que miden,
+        el codo dobla hacia donde lo pide la pose y, si la mano no llega, el hombro se adelanta y el brazo se
+        estira un poco, como en la animación de lucha."""
+        U, F = B.get("arm", (30.0, 25.5))
+        dx, dy = hd0[0] - sh[0], hd0[1] - sh[1]
+        D = math.hypot(dx, dy) or 1e-6
+        ux, uy = dx / D, dy / D
+        reach = (U + F) * 0.985
+        if D > reach:                                  # protracción del hombro hacia el objetivo
+            pro = min(3.0, D - reach)
+            sh = (sh[0] + ux * pro, sh[1] + uy * pro)
+            D -= pro
+        k = clamp(D / reach, 1.0, 1.2)                 # y un estirón de animación
+        U, F = U * k, F * k
+        D = clamp(D, abs(U - F) + 2.0, (U + F) * 0.995)
+        hd = (sh[0] + ux * D, sh[1] + uy * D)
+        a = (U * U + D * D - F * F) / (2 * D)          # distancia del hombro al pie de la perpendicular
+        h = math.sqrt(max(0.0, U * U - a * a))
+        side_ = (el0[0] - sh[0]) * (-uy) + (el0[1] - sh[1]) * ux     # ¿a qué lado dobla el codo de la pose?
+        if abs(side_) < 1.0:
+            side_ = 1.0 if ux >= 0 else -1.0                         # recto en la pose: codo hacia abajo
+        s_ = 1.0 if side_ > 0 else -1.0
+        el = (sh[0] + ux * a - uy * h * s_, sh[1] + uy * a + ux * h * s_)
+        return sh, el, hd
+
+    def bend_sides(sh, el, hd, flex, ext):
+        """Perfiles (izquierdo, derecho) de la cinta: el flexor va por dentro del doblez y el extensor fuera."""
+        cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])
+        return (flex, ext) if cr >= 0 else (ext, flex)
+
     for side, g, depth in (("l", 0, 0.84), ("r", 6, 1.0)):
-        sh, el, hd = J["sh_" + side], J["el_" + side], J["hd_" + side]
+        sh, el, hd = arm_ik(J["sh_" + side], J["el_" + side], J["hd_" + side])
         fig.m("skin")
         sk = C(skin, el[0], depth)
         fore_sk = mixc(sk, (205, 80, 70), min(0.4, 0.4 * red)) if not mono else sk
         L1, L2 = dist(sh, el), dist(el, hd)
         fx_, fy_ = _norm(el[0] - sh[0], el[1] - sh[1])
-        cap = (sh[0] - fx_ * B["delt"] * 0.35, sh[1] - fy_ * B["delt"] * 0.35)     # remate del hombro, tapado por el torso
+        # raíz del brazo: hacia atrás y un poco hacia arriba, dentro del torso, para que la manga o el deltoides
+        # cubran la parte alta del pecho y la espalda como un hombro, y no nazca un tubo pegado al borde
+        # (el brazo de detrás ya queda tapado por el torso: su raíz va hacia dentro, no asoma por la espalda)
+        back_ = (-1.0, 0.12) if side == "r" else (0.55, 0.2)
+        cap = (sh[0] + back_[0] * B["delt"] * 1.05, sh[1] + back_[1] * B["delt"] * 1.05)
         if sleeve > 0:
             # antebrazo que asoma por la manga
             fig.ribbon(g, [el, _lerp2(el, hd, 0.5), hd], [(0, fo0 + fob * 0.5), (0.3, fo0 + fob * 0.6), (0.85, fo1 * 0.95), (1, fo1 * 0.9)],
@@ -1424,17 +1460,26 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             Ls = dist(cap, sh) + L1 + dist(el, cut)
             us, ue = dist(cap, sh) / Ls, (dist(cap, sh) + L1) / Ls
             # manga de caída: hombro redondo, sin bulto en el codo, se abre hacia el puño y cuelga por debajo
-            fig.ribbon(g, [cap, sh, el, cut],
-                       [(0, B["delt"] + 0.5), (us, B["delt"] + 0.6), (ue * 0.75, up0 + 2.2), (ue, up1 + 2.8), (1, fo1 + wide + 0.6)],
-                       [(0, B["delt"] + 0.3), (us, B["delt"] + 0.4), (ue * 0.75, up0 + 1.9), (ue, up1 + 2.2), (1, fo1 + wide - 0.2)],
-                       slc, sheen=0.5, edge=True)
+            # por dentro del codo la tela se recoge; por fuera se tensa y marca la punta del codo
+            # la raíz se estrecha dentro del torso: el contorno se curva hacia el pecho como una costura raglán
+            inner = [(0, B["delt"] * 0.3), (us, B["delt"] + 0.4), (ue * 0.75, up0 + 1.9), (ue, up1 + 1.6), (1, fo1 + wide - 0.2)]
+            outer = [(0, B["delt"] * 0.3), (us, B["delt"] + 0.6), (ue * 0.75, up0 + 2.2), (ue, up1 + 2.9), (1, fo1 + wide + 0.6)]
+            kl_, kr_ = bend_sides(sh, el, hd, inner, outer)
+            fig.ribbon(g, [cap, sh, el, cut], kl_, kr_, slc, sheen=0.5, edge=True)
             # puño de la manga: refuerzo con pespuntes
             fig.m("cloth", pat="stitch")
             c0 = _lerp2(el, cut, 0.84)
             fig.ribbon(g, [c0, _lerp2(c0, cut, 0.5), cut], [(0, fo1 + wide + 0.5), (1, fo1 + wide + 0.75)],
                        [(0, fo1 + wide - 0.2), (1, fo1 + wide - 0.05)], shade(slc, 0.95), sheen=0.4)
             fig.m("cloth", True)
-            fig.line(g, [_lerp2(sh, el, 0.72), _lerp2(el, cut, 0.06), _lerp2(el, cut, 0.22)], shade(slc, 0.8), 0.9)   # pliegue del codo
+            # pliegues del codo, del lado de dentro del doblez
+            cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])
+            nx_, ny_ = _norm(-(el[1] - sh[1]), el[0] - sh[0])
+            sgn = 1.0 if cr >= 0 else -1.0
+            for o_, w_ in ((0.45, 0.8), (0.15, 0.6)):
+                off = (nx_ * sgn * up1 * o_, ny_ * sgn * up1 * o_)
+                fig.line(g, [(p_[0] + off[0], p_[1] + off[1]) for p_ in (_lerp2(sh, el, 0.7), el, _lerp2(el, cut, 0.25))],
+                         shade(slc, 0.8), w_)
             if top == "changshan":
                 fig.m("cloth")
                 fig.line(g, [_lerp2(el, cut, 0.9), cut], C(lk["accent"], el[0], depth), 0.5)
@@ -1442,18 +1487,25 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.m("skin")
             arm_c = fore_sk if red > 0.15 else sk
             ue = L1 / max(1e-6, L1 + L2)
-            # brazo: tríceps detrás, bíceps delante, codo estrecho, masa del antebrazo y muñeca fina
-            back = [(0.0, up0 * 1.02), (ue * 0.4, up0 * 0.98 + upb * 0.7), (ue * 0.85, up1 * 0.95), (ue, up1 * 0.82),
-                    (ue + (1 - ue) * 0.22, fo0 + fob * 0.45), (ue + (1 - ue) * 0.7, fo1 * 1.1), (1.0, fo1 * 0.85)]
-            front = [(0.0, up0 * 0.95), (ue * 0.55, up0 * 0.92 + upb), (ue * 0.88, up1 * 0.92), (ue, up1 * 0.8),
-                     (ue + (1 - ue) * 0.25, fo0 * 1.02 + fob), (ue + (1 - ue) * 0.72, fo1 * 1.08), (1.0, fo1 * 0.85)]
-            fig.ribbon(g, [sh, el, hd], back, front, arm_c, sheen=skin_sheen)
+            # flexores por dentro del doblez (bíceps, pliegue del codo, braquiorradial) y extensores por fuera
+            # (tríceps, punta del codo, antebrazo que se afina hacia la muñeca)
+            flex = [(0.0, up0 * 0.95), (ue * 0.5, up0 * 0.9 + upb), (ue * 0.9, up1 * 0.82), (ue, up1 * 0.72),
+                    (ue + (1 - ue) * 0.2, fo0 * 0.95 + fob * 0.85), (ue + (1 - ue) * 0.7, fo1 * 1.06), (1.0, fo1 * 0.86)]
+            extn = [(0.0, up0 * 1.02), (ue * 0.38, up0 * 0.98 + upb * 0.65), (ue * 0.85, up1 * 0.98), (ue, up1 * 1.06),
+                    (ue + (1 - ue) * 0.16, fo0 * 1.0 + fob * 0.45), (ue + (1 - ue) * 0.7, fo1 * 1.06), (1.0, fo1 * 0.86)]
+            kl_, kr_ = bend_sides(sh, el, hd, flex, extn)
+            fig.ribbon(g, [sh, el, hd], kl_, kr_, arm_c, sheen=skin_sheen)
             # deltoides: la cápsula del hombro que cubre la articulación
             dtip = _lerp2(sh, el, 0.45)
             fig.ribbon(g, [cap, sh, dtip], [(0, B["delt"] * 0.6), (0.35, B["delt"] * 0.92), (1, up0 * 0.55)],
                        [(0, B["delt"] * 0.55), (0.35, B["delt"] * 0.85), (1, up0 * 0.5)], arm_c, sheen=skin_sheen)
+            fig.m("skin", True)
+            cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])
+            nx_, ny_ = _norm(-(el[1] - sh[1]), el[0] - sh[0])
+            sgn = 1.0 if cr >= 0 else -1.0
+            fig.line(g, [(el[0] + nx_ * sgn * up1 * 0.45, el[1] + ny_ * sgn * up1 * 0.45),
+                         _lerp2(el, (el[0] + nx_ * sgn * up1 * 0.7, el[1] + ny_ * sgn * up1 * 0.7), 1.0)], shade(sk, 0.8), 0.4)   # pliegue del codo
             if "definido" in ex or lk["body"] in ("atleta", "pesado", "fibroso"):
-                fig.m("skin", True)
                 fig.line(g, [_lerp2(sh, el, 0.3), _lerp2(sh, el, 0.55), _lerp2(sh, el, 0.75)], shade(sk, 0.82), 0.5)
                 fig.line(g, [_lerp2(el, hd, 0.1), _lerp2(el, hd, 0.4)], shade(sk, 0.84), 0.45)
         if "prajied" in ex:

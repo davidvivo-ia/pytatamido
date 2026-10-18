@@ -9,36 +9,36 @@ from __future__ import annotations
 SPINE_T = [-0.1, 0.0, 0.12, 0.28, 0.45, 0.62, 0.78, 0.9, 1.0]
 
 # Perfil del torso: distancia a la columna por delante (pecho, vientre) y por detrás (espalda, glúteo).
-# Miembros: (radio inicial, radio final, abultamiento muscular).
+# Miembros: (radio inicial, radio final, abultamiento muscular). arm: longitud de brazo y antebrazo (cm).
 BODIES = {
     "atleta": dict(front=[6.0, 8.0, 10.0, 8.0, 8.5, 11.0, 10.5, 8.0, 5.5],
                    back=[10.5, 11.0, 10.0, 8.0, 9.0, 10.5, 11.5, 10.0, 6.0],
                    thigh=(8.2, 5.4, 1.7), calf=(5.0, 3.0, 1.6), upper=(4.9, 3.6, 1.2), fore=(4.1, 2.5, 1.0),
-                   neck=5.6, head=11.0, hand=4.3, delt=5.6),
+                   neck=5.6, head=11.0, hand=4.3, delt=5.6, arm=(30.0, 25.5)),
     "fibroso": dict(front=[5.5, 7.5, 9.0, 7.0, 7.5, 10.0, 9.5, 7.5, 5.0],
                     back=[9.5, 10.0, 9.0, 7.0, 8.0, 9.5, 10.5, 9.0, 5.5],
                     thigh=(7.9, 5.0, 1.8), calf=(4.9, 2.8, 1.8), upper=(4.8, 3.5, 1.4), fore=(4.1, 2.45, 1.1),
-                    neck=5.0, head=10.8, hand=4.0, delt=5.0),
+                    neck=5.0, head=10.8, hand=4.0, delt=5.0, arm=(29.5, 25.0)),
     "atleta_f": dict(front=[6.0, 8.5, 10.0, 7.5, 7.8, 10.6, 10.0, 7.5, 5.0],
                      back=[11.5, 12.0, 10.5, 7.5, 8.2, 9.5, 10.5, 9.0, 5.4],
                      thigh=(8.0, 5.0, 1.5), calf=(4.6, 2.7, 1.5), upper=(4.2, 3.1, 0.9), fore=(3.6, 2.2, 0.8),
-                     neck=4.8, head=10.5, hand=3.8, delt=4.8),
+                     neck=4.8, head=10.5, hand=3.8, delt=4.8, arm=(28.0, 24.0)),
     "menuda": dict(front=[5.5, 7.5, 8.8, 6.8, 7.0, 9.6, 9.0, 7.0, 4.7],
                    back=[10.0, 10.5, 9.0, 6.8, 7.4, 8.6, 9.6, 8.4, 5.0],
                    thigh=(7.0, 4.5, 1.2), calf=(4.2, 2.5, 1.2), upper=(3.8, 2.8, 0.7), fore=(3.3, 2.0, 0.6),
-                   neck=4.5, head=10.4, hand=3.5, delt=4.4),
+                   neck=4.5, head=10.4, hand=3.5, delt=4.4, arm=(26.5, 22.5)),
     "pesado": dict(front=[7.5, 10.0, 12.0, 12.0, 12.0, 12.5, 11.0, 9.0, 6.5],
                    back=[12.0, 12.0, 11.5, 10.5, 11.0, 12.0, 13.0, 11.0, 7.0],
                    thigh=(9.6, 6.2, 1.8), calf=(5.8, 3.4, 1.8), upper=(5.8, 4.3, 1.4), fore=(4.8, 3.0, 1.2),
-                   neck=7.0, head=11.6, hand=4.8, delt=6.6),
+                   neck=7.0, head=11.6, hand=4.8, delt=6.6, arm=(30.0, 25.5)),
     "sumo": dict(front=[10.0, 18.0, 26.0, 30.0, 28.0, 21.0, 15.0, 11.0, 8.0],
                  back=[15.0, 16.0, 17.0, 15.0, 14.0, 14.0, 14.0, 12.0, 8.0],
                  thigh=(13.0, 8.0, 1.5), calf=(7.6, 4.5, 1.6), upper=(7.6, 6.0, 1.0), fore=(6.2, 4.2, 0.8),
-                 neck=8.5, head=12.4, hand=5.4, delt=8.5),
+                 neck=8.5, head=12.4, hand=5.4, delt=8.5, arm=(30.5, 25.5)),
     "anciano": dict(front=[5.5, 7.5, 9.0, 7.5, 7.5, 8.8, 8.6, 7.5, 5.0],
                     back=[9.5, 10.0, 9.0, 7.8, 8.5, 9.8, 11.0, 10.2, 5.6],
                     thigh=(6.8, 4.4, 0.8), calf=(4.2, 2.5, 0.8), upper=(3.8, 2.9, 0.5), fore=(3.4, 2.1, 0.4),
-                    neck=4.6, head=10.6, hand=3.7, delt=4.4),
+                    neck=4.6, head=10.6, hand=3.7, delt=4.4, arm=(29.0, 24.5)),
 }
 
 # Rostro y pelo:
