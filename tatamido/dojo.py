@@ -377,44 +377,123 @@ class Dojo:
             pygame.draw.ellipse(dec, (40, 28, 16, 42), dec.get_rect())
             surf.blit(dec, (px - w / 2, py - h / 2 + dd * 0.2))
 
-    def draw_audience(self, surf, cam, floor_back):
-        """Alumnos y maestro sentados en seiza, dibujados con el mismo renderer que los luchadores."""
-        from .anatomy import AUDIENCE
+    # Con la GPU, el público se hornea con la luz de los luchadores (gpu.GPURenderer.bake_figure): Game lo
+    # conecta aquí. Sin él, se tiñen sprites con la luz de la tarde.
+    baker = None
+
+    def _audience_sprite(self, look, facing, n, lit):
+        """Figura en seiza con su apoyo (rx, ry) y altura de referencia. Con `lit`, horneada con la luz de
+        destino del asalto: tejidos, rampa pintada, brillos de material, contraluz de los shōji y farolillo."""
         from .poses import pose_seiza
         from .render_fighter import PoseDummy, render_figure
+        fd = dict(id=look, h=1.0, w=1.0, pal=["#FFFFFF"] * 4)
+        d = PoseDummy(fd, facing, n * 0.7)
+        d.sweat = 0.0
+        ua = 1.1 * RS
+        if not lit:
+            img, rx, ry = render_figure(d, pose_seiza(fd), ua, LIGHT_RIGS[1], ss=2, ow_px=2.0 * RS)
+            return img, rx, ry, ua * 125
+        from .gpu import figure_light
+        pieces: list = []
+        img, data, rx, ry = render_figure(d, pose_seiza(fd), ua, self.target_rig, ss=2, ow_px=2.0 * RS, maps=True,
+                                          pieces=pieces)
+        r = self.target_rig
+        # el farolillo de la pared les cae desde arriba y por detrás
+        lan = (rx - 20 * ua * facing, ry - 230 * ua, 0.3 * r["lanterns"]) if r["lanterns"] > 0.05 else None
+        light = figure_light(r, self.target_gpu)
+        air = mixc(r["ambient"], r["sky_bot"], 0.5)
+        haze = tuple(((v / 255.0) ** 2.2) * 0.55 for v in air) + (0.24,)
+        lit_img = self.baker(img, data, [(ax, ay) + tuple(v) for ax, ay, *v in pieces], light, (rx, ry),
+                             tex=self.cfg.get("tex", 1.0), lantern=lan, haze=haze)
+        return lit_img, rx, ry, ua * 125
+
+    def _audience_shadow(self, w):
+        """Sombra de contacto: la mancha oscura y suave que asienta a cada figura en el tatami."""
+        key = ("shadow", w)
+        img = self._aud_scaled.get(key)
+        if img is None:
+            h = max(4, w // 5)
+            img = pygame.Surface((w, h), pygame.SRCALPHA)
+            for i in range(6, 0, -1):
+                f = i / 6
+                rw, rh = w * (0.45 + 0.55 * f), h * (0.45 + 0.55 * f)
+                pygame.draw.ellipse(img, (14, 10, 8, int(34 * (1.15 - f))), ((w - rw) / 2, (h - rh) / 2, rw, rh))
+            self._aud_scaled[key] = img
+        return img
+
+    def draw_audience(self, surf, cam, floor_back):
+        """Alumnos y maestro sentados en seiza, dibujados con el mismo renderer que los luchadores. Con la GPU
+        se hornean una vez por luz de asalto y, mientras cambia la luz, la versión anterior se funde con la nueva."""
+        from .anatomy import AUDIENCE
         rig = self.rig
         if not hasattr(self, "_aud_base"):
             self._aud_base = {}
             self._aud_scaled = {}
+        lit = self.baker is not None and getattr(self, "plate", None) is not None
+        if lit:
+            key = self.plate_key(self.target_rig)
+            cur = getattr(self, "_aud_lit", None)
+            if cur is None or cur["key"] != key:
+                self._aud_lit_from = cur
+                self._aud_v = getattr(self, "_aud_v", 0) + 1
+                self._aud_lit = dict(key=key, v=self._aud_v, sprites={})
+            sets = [self._aud_lit]
+            mix = float(getattr(self, "plate_mix", 1.0))
+            if self._aud_lit_from is not None and mix < 0.999:
+                sets.insert(0, self._aud_lit_from)
+            else:
+                self._aud_lit_from = None
+        else:
+            tint = shade(mixc(rig["key"], rig["ambient"], 0.55), 1.12)
+            sets = [dict(v=("tint",) + tuple(v // 8 for v in tint), sprites=self._aud_base, tint=tint)]
+            mix = 1.0
         ids = list(AUDIENCE)
-        tint = shade(mixc(rig["key"], rig["ambient"], 0.55), 1.12)
-        tkey = tuple(v // 8 for v in tint)
+        budget = 1
         for n, a in enumerate(self.audience):
             look = ids[(n * 5 + 3) % len(ids)]
             facing = 1 if a["x"] < 0 else -1
             px, py = self.floor_pt(cam, a["x"], 0.82)
             target = 52 * a["h"] * (0.75 + cam.zoom * 0.25) * 1.25 * RS
-            base_key = (look, facing)
-            if base_key not in self._aud_base:
-                fd = dict(id=look, h=1.0, w=1.0, pal=["#FFFFFF"] * 4)
-                d = PoseDummy(fd, facing, n * 0.7)
-                d.sweat = 0.0
-                ua = 1.1 * RS
-                img, rx, ry = render_figure(d, pose_seiza(fd), ua, LIGHT_RIGS[1], ss=2, ow_px=2.0 * RS)
-                self._aud_base[base_key] = (img, rx, ry, ua * 125)
-            img, rx, ry, h0 = self._aud_base[base_key]
-            k = max(0.2, round(target / h0 * 12) / 12)
-            sk = (base_key, k, tkey)
-            sc_img = self._aud_scaled.get(sk)
-            if sc_img is None:
-                sc_img = pygame.transform.smoothscale(img, (max(1, int(img.get_width() * k)), max(1, int(img.get_height() * k))))
-                sc_img.fill((*tint, 255), special_flags=pygame.BLEND_RGBA_MULT)
-                if len(self._aud_scaled) > 400:
-                    self._aud_scaled.clear()
-                self._aud_scaled[sk] = sc_img
             lean = a["lean"] * 6 * facing * RS
             bob = -abs(math.sin(self.t * 12 + a["bob"])) * 4 * a["arms"] * RS
-            self.drawn.append(surf.blit(sc_img, (int(px + lean - rx * k), int(py + bob - ry * k))))
+            base_key = (look, facing)
+            layers = []
+            for st in sets:
+                spr = st["sprites"].get(base_key)
+                if spr is None and (budget > 0 or len(sets) == 1 or (st is sets[-1] and not layers)):
+                    # con luz nueva se hornea una figura por fotograma (sin tirón); mientras, se ve la anterior
+                    budget -= 1
+                    spr = st["sprites"][base_key] = self._audience_sprite(look, facing, n, "tint" not in st)
+                if spr is not None:
+                    layers.append((st, spr))
+            for si, (st, spr) in enumerate(layers):
+                img, rx, ry, h0 = spr
+                k = max(0.2, round(target / h0 * 12) / 12)
+                if si == 0:
+                    sh = self._audience_shadow(max(8, int(h0 * k * 0.95)))
+                    self.drawn.append(surf.blit(sh, (int(px - sh.get_width() / 2 - facing * h0 * k * 0.05),
+                                                     int(py - sh.get_height() * 0.55))))
+                sk = (base_key, k, st["v"])
+                sc_img = self._aud_scaled.get(sk)
+                if sc_img is None:
+                    sc_img = pygame.transform.smoothscale(img, (max(1, int(img.get_width() * k)), max(1, int(img.get_height() * k))))
+                    if "tint" in st:
+                        sc_img.fill((*st["tint"], 255), special_flags=pygame.BLEND_RGBA_MULT)
+                    if len(self._aud_scaled) > 400:
+                        self._aud_scaled.clear()
+                    self._aud_scaled[sk] = sc_img
+                if si == 1:
+                    # fundido de la luz anterior a la nueva, en ocho escalones precalculados (el alfa de
+                    # superficie sobre alfa por píxel es la vía lenta de pygame)
+                    step = min(7, int(mix * 8))
+                    fk = sk + (step,)
+                    faded = self._aud_scaled.get(fk)
+                    if faded is None:
+                        faded = sc_img.copy()
+                        faded.fill((255, 255, 255, int(255 * (step + 0.5) / 8)), special_flags=pygame.BLEND_RGBA_MULT)
+                        self._aud_scaled[fk] = faded
+                    sc_img = faded
+                self.drawn.append(surf.blit(sc_img, (int(px + lean - rx * k), int(py + bob - ry * k))))
 
     def draw_beams(self, surf, cam, layer, intensity_override=None):
         """Haces volumétricos de los shōji y polvo en suspensión (capa aditiva)."""

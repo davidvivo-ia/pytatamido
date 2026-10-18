@@ -92,7 +92,10 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   borde de la piel, brillos duros de sudor, cuero y satén, anillo de luz en el pelo y contraluz recortado.
 - **Contraste y profundidad:** menos neblina y bloom, curva de contraste más firme y desenfoque suave
   del fondo en juego (presets *alto* en adelante) para despegar los cuerpos.
-- **Público real:** alumnos y un maestro del dojo sentados en seiza, dibujados con el mismo renderer.
+- **Público real:** alumnos y un maestro del dojo sentados en seiza, dibujados con el mismo renderer. Con
+  la GPU se hornean una vez por luz de asalto con el sombreado de los luchadores (tejidos, rampa pintada,
+  brillos de material, contraluz de los shōji y farolillo cenital de noche), con perspectiva aérea y sombra
+  de contacto. Al cambiar de asalto se hornea una figura por fotograma mientras la luz anterior se funde.
 - **Escalador dinámico de calidad:** si un fotograma se pasa de presupuesto, baja el supermuestreo de
   los luchadores antes que la fluidez, y lo recupera cuando sobra tiempo.
 

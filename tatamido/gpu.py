@@ -642,6 +642,23 @@ void main() {
 }
 """
 
+# Horneado de figuras sueltas (público): el mismo litFighter del combate sobre un sprite con su mapa de
+# altura y piezas. Devuelve color ya iluminado (sin el tinte global, que el shader de escena aplica a tBg).
+BAKE = SCENE[:SCENE.index("void main() {\n    vec2 p = vec2(gl_FragCoord.x")] + """
+uniform vec4 uHaze;            // perspectiva aérea: color del aire (lineal) y cuánto
+void main() {
+    vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+    vec4 fg = Lp(tFig, p);
+    if (fg.a < 0.004) { frag = vec4(0.); return; }
+    vec3 c = litFighter(p, fg);
+    // a seis metros el aire del dojo come contraste: los blancos no compiten con los luchadores
+    // y les tiñe la sombra: a contraluz de los shōji la sombra fría del tejido viraba a verde
+    c *= mix(vec3(1.), normalize(uHaze.rgb + 1e-4) * 1.732, uHaze.a * 2.0);
+    c = mix(c, uHaze.rgb + c * 0.35, uHaze.a);
+    frag = vec4(pow(clamp(c, 0., 1.), vec3(1. / 2.2)), fg.a);
+}
+"""
+
 RAYS = COMMON + """
 uniform sampler2D tBg, tFig, tPlate;
 uniform vec2 uRes;
@@ -876,6 +893,15 @@ def _lin(c, k=1.0):
     return tuple(((v / 255.0) ** 2.2) * k for v in c)
 
 
+def figure_light(rig: dict, g: dict) -> dict:
+    """La luz que reciben las figuras con una luz de asalto (la de escena y la del horneado del público)."""
+    return dict(key=_lin(rig["key"], g["key_i"]), amb=_lin(rig["ambient"], g["amb_i"]), key3=g["key3"],
+                sky=_lin(mixc(rig["ambient"], rig["sky_bot"], 0.4), g["amb_i"] * 1.5),
+                bounce=_lin(rig["floor"], 0.35 * g["amb_i"]),
+                lan=(1.0 * rig["lanterns"], 0.5 * rig["lanterns"], 0.2 * rig["lanterns"]),
+                lan_i=rig["lanterns"], rim=g["rim"])
+
+
 def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
     """Recoge todo lo que la GPU necesita de un fotograma: cámara, luz, luchadores, decals, ondas."""
     rig = dojo.rig
@@ -905,13 +931,10 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
     while len(waves) < 4:
         waves.append((0.0, 0.0, 0.0, 0.0))
     p = dict(
+        figure_light(rig, g),
         cam=(cam.x, zoom * RS, base_y, cam.shake_x), depth=depth, floor_back=base_y - depth,
-        key=_lin(rig["key"], g["key_i"]), amb=_lin(rig["ambient"], g["amb_i"]),
-        key3=g["key3"], sky=_lin(mixc(rig["ambient"], rig["sky_bot"], 0.4), g["amb_i"] * 1.5),
-        bounce=_lin(rig["floor"], 0.35 * g["amb_i"]),
-        lan=(1.0 * rig["lanterns"], 0.5 * rig["lanterns"], 0.2 * rig["lanterns"]),
-        tint=_lin(rig["tint"]), beam_i=g["beam_i"] if cfg.get("beams", True) else 0.0, lan_i=rig["lanterns"],
-        refl=g["refl"], wet=g["wet"], rim=g["rim"], emissive=g["emissive"], sky_fill=g["sky_fill"],
+        tint=_lin(rig["tint"]), beam_i=g["beam_i"] if cfg.get("beams", True) else 0.0,
+        refl=g["refl"], wet=g["wet"], emissive=g["emissive"], sky_fill=g["sky_fill"],
         light_dir=g["light_dir"], shadow=g["shadow"] if cfg.get("shadows", True) else (0, 1, 0, 0),
         lanterns=lanterns, fighters=figs, decals=decals, waves=waves, tex=float(cfg.get("tex", 1.0)),
         wall=dojo.wall_geom(cam), plate=getattr(dojo, "plate", None), plate_from=getattr(dojo, "plate_from", None),
@@ -954,6 +977,7 @@ class GPURenderer:
         self.p_dof, self.v_dof = prog(DOF)
         self.p_final, self.v_final = prog(FINAL)
         self.p_present, self.v_present = prog(PRESENT)
+        self.p_bake, self.v_bake = prog(BAKE)
 
         def tex(size, comps=4, dtype="f1", mip=False):
             t = ctx.texture(size, comps, dtype=dtype)
@@ -968,6 +992,8 @@ class GPURenderer:
         self.t_figd = tex((W, H), mip=True)
         self.t_pieces = ctx.texture((256, 2), 4, dtype="f4")        # tabla de piezas: ancla, eje, material, tejido
         self.t_pieces.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self.t_bake_pieces = ctx.texture((256, 2), 4, dtype="f4")   # la del horneado, aparte de la del fotograma
+        self.t_bake_pieces.filter = (moderngl.NEAREST, moderngl.NEAREST)
         self._pieces = np.zeros((2, 256, 4), dtype="f4")
         self.slots = [dict(ver=None, col=None, mat=None), dict(ver=None, col=None, mat=None)]   # lámina actual y anterior
         self._dummy = tex((4, 4))
@@ -1262,6 +1288,58 @@ class GPURenderer:
             scr.clear(0, 0, 0, 1)
             scr.viewport = ((ww - vw) // 2, (wh - vh) // 2, vw, vh)
             self.v_present.render(moderngl.TRIANGLES, vertices=3)
+
+    def bake_figure(self, img: pygame.Surface, data: pygame.Surface, pieces, light: dict, feet, tex=1.0,
+                    lantern=None, haze=None) -> pygame.Surface:
+        """Ilumina una figura suelta (albedo + altura/piezas de render_figure) con la luz de los luchadores y la
+        devuelve como sprite RGBA: tejidos, rampa pintada, brillos de material, contraluz y farolillo.
+        `feet` es el punto de apoyo en el sprite; `lantern`, un farolillo (x, y en px del sprite, intensidad);
+        `haze`, el aire entre la figura y la cámara (r, g, b lineales y cantidad)."""
+        ctx = self.ctx
+        size = img.get_size()
+
+        def up(surf):
+            t = ctx.texture(size, 4, pygame.image.tobytes(surf, "RGBA"))
+            t.repeat_x = t.repeat_y = False
+            t.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+            t.build_mipmaps()
+            return t
+
+        t_fig, t_figd = up(img), up(data)
+        arr = np.zeros((2, 256, 4), dtype="f4")
+        for i, pc in enumerate(pieces[:254]):
+            arr[0, i + 1] = pc[0:4]
+            arr[1, i + 1] = pc[4:8]
+        self.t_bake_pieces.write(arr.tobytes())
+        out = ctx.texture(size, 4)
+        fbo = ctx.framebuffer([out])
+        pr = self.p_bake
+        self._bind(pr, tFig=t_fig, tFigD=t_figd, tPieces=self.t_bake_pieces)
+        S = self._set
+        S(pr, "uRes", (float(size[0]), float(size[1])))
+        S(pr, "uTexI", float(tex))
+        for k, n in (("key3", "uKey3"), ("sky", "uSky"), ("bounce", "uBounce"), ("key", "uKey"), ("lan", "uLan")):
+            S(pr, n, tuple(float(v) for v in light[k]))
+        S(pr, "uTint", (1.0, 1.0, 1.0))
+        S(pr, "uRimI", float(light["rim"]))
+        S(pr, "uLanI", float(light["lan_i"]))
+        lan = [(0.0, 0.0, 0.0, 0.0)] * 4
+        if lantern is not None and lantern[2] > 0.0:
+            lan[0] = (float(lantern[0]), float(lantern[1]), 0.0, float(lantern[2]))
+        S(pr, "uLanterns", lan)
+        S(pr, "uHaze", tuple(float(v) for v in haze) if haze else (0.0, 0.0, 0.0, 0.0))
+        fx, fy = feet
+        S(pr, "uFighters", [(float(fx), float(fy), 0.0, float(size[0])), (float(fx), float(fy), 0.0, float(size[0]))])
+        ctx.disable(moderngl.BLEND)
+        fbo.use()
+        fbo.clear(0.0, 0.0, 0.0, 0.0)
+        self.v_bake.render(moderngl.TRIANGLES, vertices=3)
+        # al formato nativo de pygame: un sprite RGBA se convertiría píxel a píxel en cada blit (20× más lento)
+        res = pygame.image.frombytes(fbo.read(components=4), size, "RGBA", True).convert(
+            pygame.Surface((1, 1), pygame.SRCALPHA))
+        for o in (fbo, out, t_fig, t_figd):
+            o.release()
+        return res
 
     def read(self, with_hud=True) -> pygame.Surface:
         """Fotograma final como Surface (con HUD) o la imagen limpia sin interfaz (Modo Foto)."""

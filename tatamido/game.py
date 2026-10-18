@@ -47,6 +47,7 @@ class Game:
         self.gpu: Optional[GPURenderer] = None
         self.renderer_pref = args.get("renderer") or self.save.get("renderer", "auto")
         self.screen = self._open_display(args)
+        Dojo.baker = self.gpu.bake_figure if self.gpu is not None else None   # público horneado con luz por píxel
         pygame.display.set_caption(TITLE + ("  ·  GPU" if self.gpu else "  ·  CPU"))
         self.bg = pygame.Surface((RW, RH), pygame.SRCALPHA)
         self.fig = pygame.Surface((RW, RH), pygame.SRCALPHA)
