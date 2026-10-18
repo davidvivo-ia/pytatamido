@@ -145,7 +145,7 @@ class Effects:
             a = int(255 * (1 - s[4] / s[5]))
             sx, sy = cam.P(s[0], s[1])
             ex, ey = cam.P(s[0] - s[2] * 2, s[1] - s[3] * 2)
-            pygame.draw.line(layer, (*s[6], a), (sx, sy), (ex, ey), 2)
+            pygame.draw.line(layer, (*s[6], a), (sx, sy), (ex, ey), max(2, int(2 * RS)))
         for r in self.rings:
             a = int(200 * (1 - r[4] / 20))
             sx, sy = cam.P(r[0], r[1])

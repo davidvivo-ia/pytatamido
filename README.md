@@ -12,7 +12,11 @@ el taiko y el shakuhachi se generan en el arranque.
 |---|---|
 | ![Noche de farolillos](docs/02_noche.jpg) | ![Desempate bajo la lluvia](docs/03_lluvia.jpg) |
 | ![Kiai Final](docs/04_kiai_final.jpg) | ![Modo Foto Caravaggio](docs/05_modo_foto_caravaggio.jpg) |
-| ![Selección](docs/06_seleccion.jpg) | |
+| ![Selección](docs/06_seleccion.jpg) | ![Retrato: Haruki a la luz rasante](docs/10_retrato.jpg) |
+
+Las imágenes son carteles renderizados por el propio motor a 3840×2160 y reducidos con Lanczos a
+2560 px (`python tools/carteles.py`): cada una es un instante escenificado (el pie que llega, el cuerpo en
+el aire, el kiai) encuadrado y gradado en el Modo Foto, con profundidad de campo y sin interfaz.
 
 ## Los luchadores
 
@@ -140,7 +144,11 @@ python Tatamydo.py --photo-mode      # arranca directo en el Modo Foto
 python Tatamydo.py --ai-vs-ai        # espectador
 python Tatamydo.py --debug-hitboxes
 python -m pytest -q                  # tests de simulación
+python tools/carteles.py             # regenera las imágenes de docs/ en 4K (--rs 1 --only 01 para un vistazo)
 ```
+
+`TATAMIDO_RS=2` o `3` multiplica la resolución interna (1440p, 4K): cámara, dojo, tinta y shaders
+escalan sus medidas en píxeles. Es el modo de los carteles; la interfaz del juego sigue pensada para 720p.
 
 ## Controles
 

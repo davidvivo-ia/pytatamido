@@ -1567,9 +1567,9 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
         pygame.draw.ellipse(shadow, (10, 6, 4, int(90 * (1 - min(0.6, hgt / 300)))), shadow.get_rect())
         surf.blit(shadow, (sx - sw + cam.S(12), sy - sh))
     active = f.state in (Fighter.ATTACK, Fighter.KIAI) and f.move is not None and f.move.startup <= f.timer < f.move.startup + f.move.active
-    rim = 1.0 if active else f.rim
+    rim = (1.0 if active else f.rim) if cfg.get("rim_ink", True) else 0.0
     ocol = mixc(OUTLINE, f.player_color, min(1.0, rim)) if not lut_bw else OUTLINE
-    ow = 2.0 + 1.4 * min(1.0, rim)
+    ow = (2.0 + 1.4 * min(1.0, rim)) * RS
     # supermuestreo adaptativo: con el luchador grande en pantalla basta con menos muestras
     ss = max(1.0, min(cfg.get("ss", 2), cfg.get("ss_px", 2.7) / max(0.1, cam.S(1))))
     x0, y0 = cam.P(f.x, f.y)

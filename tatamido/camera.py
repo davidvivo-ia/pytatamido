@@ -35,7 +35,7 @@ class Camera:
             half = 640.0 / (self.tzoom * 0.95)
             lim = max(0.0, SAFE_HALF + 80 - half)
             self.tx = clamp(mid, -lim, lim)
-            self.ty = air * self.tzoom * 0.95 * 0.5
+            self.ty = air * self.tzoom * 0.95 * 0.5 * RS
         self.x = lerp(self.x, self.tx, 0.08)
         if self.override is None:
             self.yoff = lerp(self.yoff, self.ty, 0.1)
@@ -45,8 +45,9 @@ class Camera:
 
     def P(self, wx, wy):
         """Mundo (cm, y hacia arriba negativo) → pantalla."""
-        return (W / 2 + (wx - self.x) * self.zoom * 0.95 + self.shake_x,
-                FLOOR_Y + wy * self.zoom * 0.95 + self.yoff + self.shake_y + cam_base_off(self.zoom))
+        k = self.zoom * 0.95 * RS
+        return (W / 2 + (wx - self.x) * k + self.shake_x,
+                FLOOR_Y + wy * k + self.yoff + self.shake_y + cam_base_off(self.zoom))
 
     def S(self, l):
-        return l * self.zoom * 0.95
+        return l * self.zoom * 0.95 * RS

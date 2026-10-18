@@ -9,7 +9,10 @@ import pygame
 #  CONSTANTES GLOBALES
 # ─────────────────────────────────────────────────────────────────────────────
 TITLE = "TATAMI: DŌ — Edición 2026"
-W, H = 1280, 720
+# Escala de render: 1 = 1280×720 (juego). Los carteles se renderizan con TATAMIDO_RS=2 (1440p) o 3 (4K):
+# todo lo que se mide en píxeles (cámara, dojo, tinta, shaders) se multiplica por RS.
+RS = max(1.0, float(os.environ.get("TATAMIDO_RS", "1") or 1))
+W, H = int(round(1280 * RS)), int(round(720 * RS))
 FPS = 60
 ROUND_TIME = 99
 VIT_MAX = 1000
@@ -134,7 +137,7 @@ GPU_RIGS = {
 
 def cam_base_off(zoom):
     """Desplazamiento vertical del plano del suelo según el zoom (igual en CPU, dojo y GPU)."""
-    return (1 - zoom) * 90 if zoom < 1 else 34 * (zoom - 1)
+    return ((1 - zoom) * 90 if zoom < 1 else 34 * (zoom - 1)) * RS
 
 
 def lerp_tree(a, b, t):

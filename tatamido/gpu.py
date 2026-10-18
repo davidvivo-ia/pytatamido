@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     moderngl = None
     np = None
 
-from .config import FLOOR_Y, H, W, cam_base_off, mixc
+from .config import FLOOR_Y, H, RS, W, cam_base_off, mixc
 
 LUT_IDS = {"Natural": 0, "Caravaggio": 1, "Hammershøi": 2, "Kurosawa B/N": 3, "Daido Moriyama": 4}
 DALT_IDS = {"off": 0, "protanopia": 1, "deuteranopia": 2, "tritanopia": 3}
@@ -59,6 +59,8 @@ float fstripe(float x, float period) {
     float w = fwidth(x) / period;
     return mix(0.5 + 0.5 * cos(6.2831853 * x / period), 0.5, clamp(w * 1.3, 0., 1.));
 }
+uniform float uRS;            // escala de render (1 = 720p): las medidas en píxeles se multiplican por ella
+float LB() { return log2(max(uRS, 1.)); }   // desplazamiento de mip equivalente
 vec3 toLin(vec3 c) { return pow(max(c, 0.), vec3(2.2)); }
 float luma(vec3 c) { return dot(c, vec3(.2126, .7152, .0722)); }
 """
@@ -151,10 +153,10 @@ float windowLight(float X, float Z, float k) {
 float figShadow(vec2 p, float yf) {
     float dy = p.y - yf;
     if (dy <= 0.) return 0.;
-    float h = dy / uShadow.y;
-    vec2 src = vec2(p.x - h * uShadow.x, yf - h);
+    float h = dy / uShadow.y / uRS;
+    vec2 src = vec2(p.x - h * uShadow.x * uRS, yf - h * uRS);
     if (src.y < 1.) return 0.;
-    float lod = 0.6 + h * uShadow.z;
+    float lod = 0.6 + h * uShadow.z + LB();
     return Lp(tFig, src, lod).a * uShadow.w * (1. - smoothstep(60., 560., h));
 }
 
@@ -171,7 +173,7 @@ vec3 lanternLight(float X, float Z, out vec3 spec, vec2 p) {
         // reflejo especular alargado del farolillo en el suelo barnizado
         float yb = uCam.z - 0.9 * uDepthScale;
         float ry = yb + (yb - l.y) * 0.55;
-        vec2 q = vec2((p.x - l.x) / 7., (p.y - ry) / (26. + 40. * uWet));
+        vec2 q = vec2((p.x - l.x) / 7., (p.y - ry) / (26. + 40. * uWet)) / uRS;
         spec += uLan * l.w * exp(-dot(q, q)) * 2.2;
     }
     return acc;
@@ -217,24 +219,27 @@ vec3 shadeFloor(vec2 p, out float coc) {
     float refl = uRefl * gloss * (1. + uWet);
     vec2 rip = vec2(0.);
     if (uWet > 0.) {
-        vec2 cell = floor(p / vec2(64., 20.));
+        vec2 pr = p / uRS;
+        vec2 cell = floor(pr / vec2(64., 20.));
         vec2 cpos = (cell + vec2(hash12(cell), hash12(cell + 7.))) * vec2(64., 20.);
         float t = fract(uTime * 0.9 + hash12(cell + 3.));
-        vec2 q = (p - cpos) * vec2(1., 2.8);
+        vec2 q = (pr - cpos) * vec2(1., 2.8);
         float r = length(q);
         float ring = sin(r * 0.7 - t * 22.) * exp(-r * 0.07) * (1. - t) * step(r, t * 48.);
-        rip = normalize(q + 1e-3) * ring * 4.;
+        rip = normalize(q + 1e-3) * ring * 4. * uRS;
     }
     float dy = p.y - yf;
     if (dy > 0.) {
-        vec4 rf = Lp(tFig, vec2(p.x, yf - dy) + rip, 1. + dy * 0.03 * (1. - 0.5 * uWet));
-        col += toLin(rf.rgb) * uTint * rf.a * refl * exp(-dy * 0.009);
+        float dr = dy / uRS;
+        vec4 rf = Lp(tFig, vec2(p.x, yf - dy) + rip, 1. + dr * 0.03 * (1. - 0.5 * uWet) + LB());
+        col += toLin(rf.rgb) * uTint * rf.a * refl * exp(-dr * 0.009);
     }
     float dw = p.y - uFloorBackY;
     if (dw > 0.) {
-        vec4 wb = Lp(tBg, vec2(p.x, uFloorBackY - dw * 1.4) + rip, 1.5 + dw * 0.025);
+        float dwr = dw / uRS;
+        vec4 wb = Lp(tBg, vec2(p.x, uFloorBackY - dw * 1.4) + rip, 1.5 + dwr * 0.025 + LB());
         vec3 wl = toLin(wb.rgb);
-        col += wl * (1. + uEmissive * smoothstep(0.3, 0.8, luma(wl))) * wb.a * refl * 0.7 * exp(-dw * 0.011);
+        col += wl * (1. + uEmissive * smoothstep(0.3, 0.8, luma(wl))) * wb.a * refl * 0.7 * exp(-dwr * 0.011);
     }
     col += lspec * gloss * uLanI * (0.25 + uWet);
     return col;
@@ -243,7 +248,7 @@ vec3 shadeFloor(vec2 p, out float coc) {
 // ── luz por píxel de los luchadores ──────────────────────────────────────────
 // tFigD: R altura (grupos de profundidad + cúpula por pieza), G material, B brillo.
 // 0 tinta · 1 piel · 2 algodón · 3 satén/lycra · 4 cuero · 5 pelo · 6 ojos
-float figH(vec2 q) { return Lp(tFigD, q, 1.0).r * 0.5 + Lp(tFigD, q, 2.3).r * 0.5; }
+float figH(vec2 q) { return Lp(tFigD, q, 1.0 + LB()).r * 0.5 + Lp(tFigD, q, 2.3 + LB()).r * 0.5; }
 
 // ── tejidos diseñados, en el espacio propio de cada pieza ────────────────────
 // El mapa de datos guarda en G el número de pieza; tPieces trae su ancla en pantalla, su eje, los
@@ -344,8 +349,8 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
     } else if (pat == 9) {                           // mawashi: seda gruesa acanalada
         float rib = pow(max(bump1(q.y / 1.7), 0.), 0.6);
         float v = vis(1.7, pxcm);
-        h = rib * 0.5 * v + drape(q, seed, 2.5) * 0.12;
-        ak = 1. + v * (0.16 * rib - 0.1);
+        h = rib * 0.28 * v + drape(q, seed, 2.5) * 0.08;
+        ak = 1. + v * (0.1 * rib - 0.06);
         sk = 0.6 + 0.8 * rib;
     } else if (pat == 10) {                          // cuero: arrugas transversales y granulado
         float cr = sin(6.2831853 * (q.x / 2.6 + 0.35 * vnoise(q * 0.45 + seed)));
@@ -403,14 +408,14 @@ vec3 litFighter(vec2 p, vec4 fg) {
     vec2 dd = p - P0.xy;
     vec2 q = vec2(dot(dd, t), dot(dd, nn)) / pxcm;         // cm dentro de la pieza
 
-    float e = 2.0;
+    float e = 2.0 * uRS;
     float hx = figH(p + vec2(e, 0.)) - figH(p - vec2(e, 0.));
     float hy = figH(p + vec2(0., e)) - figH(p - vec2(0., e));
     float bump = mat == 5 ? 5.0 : 7.0;
     // forma amplia: la altura muy desenfocada redondea brazos, piernas y torso hacia la silueta
-    float e2 = 6.0;
-    float bx = Lp(tFigD, p + vec2(e2, 0.), 3.6).r - Lp(tFigD, p - vec2(e2, 0.), 3.6).r;
-    float by = Lp(tFigD, p + vec2(0., e2), 3.6).r - Lp(tFigD, p - vec2(0., e2), 3.6).r;
+    float e2 = 6.0 * uRS, l2 = 3.6 + LB();
+    float bx = Lp(tFigD, p + vec2(e2, 0.), l2).r - Lp(tFigD, p - vec2(e2, 0.), l2).r;
+    float by = Lp(tFigD, p + vec2(0., e2), l2).r - Lp(tFigD, p - vec2(0., e2), l2).r;
     float formK = 2.6;
     vec3 N0 = normalize(vec3(-hx * bump - bx * formK, hy * bump + by * formK, 1.0));
     // tejido: valor y pendiente (diferencias de medio píxel), girada de la pieza a la pantalla
@@ -430,7 +435,7 @@ vec3 litFighter(vec2 p, vec4 fg) {
     }
     if (mat == 4) alb *= 1. + 0.45 * smoothstep(0.3, 0.62, 1. - N0.z) * uTexI;     // cuero gastado en los cantos
 
-    float ao = 1. - clamp((Lp(tFigD, p, 4.2).r - fd.r) * 2.2, 0., 0.5);
+    float ao = 1. - clamp((Lp(tFigD, p, 4.2 + LB()).r - fd.r) * 2.2, 0., 0.5);
     vec3 V = vec3(0., 0., 1.);
     vec3 L = normalize(uKey3);
     vec3 Hv = normalize(L + V);
@@ -458,17 +463,18 @@ vec3 litFighter(vec2 p, vec4 fg) {
     }
     if (mat == 2) col += alb * uKey * 0.2 * pow(1. - N.z, 2.) * lit;                     // pelusa del algodón a contraluz
     // farolillos: luces puntuales con la misma rampa
-    vec3 P3 = vec3(p.x, -p.y, 0.);
+    vec3 P3 = vec3(p.x, -p.y, 0.) / uRS;
     float lanHi = 0.;
     for (int i = 0; i < 4; i++) {
         vec4 l = uLanterns[i];
         if (l.w <= 0.) continue;
-        vec3 d = vec3(l.x, -l.y, 140.) - P3;
+        vec3 d = vec3(l.x / uRS, -l.y / uRS, 140.) - P3;
         float r = length(d);
         vec3 Ld = d / r;
         float att = l.w * 160000. / (r * r + 40000.);
         float ramp = smoothstep(-0.12, 0.12, dot(N, Ld));
-        col += alb * uLan * att * ramp * (mat == 1 ? 0.45 : 0.6);
+        vec3 lanC = mat == 1 ? mix(uLan, vec3(luma(uLan)) * 1.6, 0.35) : uLan;      // la piel no se vuelve arcilla
+        col += alb * lanC * att * ramp * (mat == 1 ? 0.45 : 0.6);
         lanHi += att * smoothstep(0.94, 0.975, dot(N, normalize(Ld + V)));
     }
     // brillos duros por material; satén, seda y pelo en vetas anisótropas a lo largo de la pieza
@@ -518,11 +524,11 @@ void main() {
     } else if (fg.a > 0.004) {
         vec3 c = toLin(fg.rgb) * uTint;
         vec2 ld = normalize(uLightDir);
-        float aL = Lp(tFig, p + ld * 3.5).a;
-        float aS = Lp(tFig, p - ld * 5.).a;
+        float aL = Lp(tFig, p + ld * 3.5 * uRS).a;
+        float aS = Lp(tFig, p - ld * 5. * uRS).a;
         c *= 1. - 0.32 * (1. - aS) * fg.a;
         c += fg.a * (1. - aL) * uKey * uRimI;
-        float aU = Lp(tFig, p + vec2(0., -3.)).a;
+        float aU = Lp(tFig, p + vec2(0., -3. * uRS)).a;
         c += fg.a * (1. - aU) * uLan * uLanI * 0.9;
         col = mix(col, c, fg.a);
         coc = mix(coc, 0., fg.a);
@@ -541,8 +547,8 @@ uniform vec2 uRes;
 uniform vec2 uLightUV;
 uniform float uFloorBackY, uDensity, uDecay, uTime;
 float mask(vec2 q) {
-    vec4 b = textureLod(tBg, q, 3.5);     // máscara desenfocada: sin moiré con la celosía
-    float a = textureLod(tFig, q, 2.0).a;
+    vec4 b = textureLod(tBg, q, 3.5 + LB());     // máscara desenfocada: sin moiré con la celosía
+    float a = textureLod(tFig, q, 2.0 + LB()).a;
     float wall = step(q.y * uRes.y, uFloorBackY);
     return b.a * wall * smoothstep(0.5, 0.92, dot(b.rgb, vec3(.299, .587, .114))) * (1. - a);
 }
@@ -674,7 +680,7 @@ void main() {
         vec2 dv = p - w.xy;
         dv.y *= 1.5;
         float r = length(dv);
-        off += normalize(dv + 1e-4) * exp(-pow((r - w.z) / 16., 2.)) * w.w * 12.;
+        off += normalize(dv + 1e-4) * exp(-pow((r - w.z) / (16. * uRS), 2.)) * w.w * 12. * uRS;
     }
     p -= off;
     q = vec2(p.x / uRes.x, 1. - p.y / uRes.y);
@@ -684,7 +690,7 @@ void main() {
     col += texture(tRays, q).rgb * uRaysCol * uRaysI;
     col = mix(col, texture(tBloom, q).rgb, uBloom);
     if (uSpot > 0.) {
-        float hw = 60. + clamp(p.y / uSpotPos.y, 0., 1.3) * 250.;
+        float hw = (60. + clamp(p.y / uSpotPos.y, 0., 1.3) * 250.) * uRS;
         float m = 1. - smoothstep(hw * 0.7, hw * 1.15, abs(p.x - uSpotPos.x));
         col *= mix(1., 0.16 + 1.6 * m, uSpot);
     }
@@ -721,7 +727,7 @@ void main() {
     if (uHiContrast == 1) s = clamp((s - 0.5) * 1.35 + 0.5, 0., 1.);
     if (uDalt > 0) s = daltonize(s, uDalt);
     float gr = uGrain * (uLut == 4 ? 3.5 : 1.);
-    float n = hash12(gl_FragCoord.xy + fract(uTime * 7.31) * vec2(91.7, 37.3)) - 0.5;
+    float n = hash12(floor(gl_FragCoord.xy / uRS) + fract(uTime * 7.31) * vec2(91.7, 37.3)) - 0.5;   // grano de película del mismo tamaño a cualquier resolución
     s += n * gr * (0.45 + 0.55 * (1. - luma(s)));
     s += (hash12(gl_FragCoord.xy * 1.37 + uTime) - 0.5) / 255.;
     frag = vec4(clamp(s, 0., 1.), 1.);
@@ -769,18 +775,18 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
     g = dojo.gpu_rig
     zoom = cam.zoom
     base_y = FLOOR_Y + cam.yoff + cam.shake_y + cam_base_off(zoom)
-    depth = 190 * (0.75 + zoom * 0.25)
+    depth = 190 * (0.75 + zoom * 0.25) * RS
     lanterns = []
     for (sx, sy, inten) in getattr(dojo, "lantern_pos", [])[:4]:
         k = 1 - 0.42 * 0.9
-        wx = (sx - W / 2 - cam.shake_x) / (zoom * 0.95 * k) + cam.x
+        wx = (sx - W / 2 - cam.shake_x) / (zoom * 0.95 * k * RS) + cam.x
         lanterns.append((sx, sy, wx, inten))
     while len(lanterns) < 4:
         lanterns.append((0.0, 0.0, 0.0, 0.0))
     figs = []
     for f in fighters[:2]:
         sx, _ = cam.P(f.x, 0)
-        figs.append((sx, base_y, max(0.0, -f.y) * zoom * 0.95, cam.S(46 * f.width * f.scale)))
+        figs.append((sx, base_y, cam.S(max(0.0, -f.y)), cam.S(46 * f.width * f.scale)))
     while len(figs) < 2:
         figs.append((-9999.0, base_y, 0.0, 1.0))
     decals = [(x, s, 1.0, dd * 2.0) for (x, dd, s) in dojo.decals[-16:]]
@@ -792,7 +798,7 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
     while len(waves) < 4:
         waves.append((0.0, 0.0, 0.0, 0.0))
     p = dict(
-        cam=(cam.x, zoom, base_y, cam.shake_x), depth=depth, floor_back=base_y - depth,
+        cam=(cam.x, zoom * RS, base_y, cam.shake_x), depth=depth, floor_back=base_y - depth,
         key=_lin(rig["key"], g["key_i"]), amb=_lin(rig["ambient"], g["amb_i"]),
         key3=g["key3"], sky=_lin(mixc(rig["ambient"], rig["sky_bot"], 0.4), g["amb_i"] * 1.5),
         bounce=_lin(rig["floor"], 0.35 * g["amb_i"]),
@@ -805,7 +811,7 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
         exposure=g["exposure"], lift=g["lift"], gain=g["gain"], sat=g["sat"], power=g["power"],
         bloom=0.05 if cfg.get("bloom") else 0.02, ca=0.25 + (fx.ca if fx is not None else 0.0),
         vig=g["vig"], grain=0.03 if cfg.get("grain") else 0.0,
-        spot=dojo.single_beam, spot_pos=(W / 2, FLOOR_Y + 40),
+        spot=dojo.single_beam, spot_pos=(W / 2, FLOOR_Y + 40 * RS),
         impact=(1.0 if fx is not None and fx.impact > 0 else 0.0),
         tilt=cam.tilt if cfg.get("tilt") else 0.0, dof=0.0, dim=0.0, lut="Natural", fxaa=True,
     )
@@ -818,7 +824,7 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
 #  RENDERER
 # ─────────────────────────────────────────────────────────────────────────────
 class GPURenderer:
-    BLOOM_LEVELS = 6
+    BLOOM_LEVELS = 6 + int(round(math.log2(RS)))
 
     def __init__(self, ctx, offscreen: bool):
         self.ctx = ctx
@@ -930,6 +936,7 @@ class GPURenderer:
         for i, (name, t) in enumerate(textures.items()):
             t.use(location=i)
             self._set(prog, name, i)
+        self._set(prog, "uRS", float(RS))
 
     # ----- fotograma -----
     def render(self, p: dict, bg, fig, fx, hud, dt=1 / 60, window_size=None, figd=None):
@@ -984,7 +991,7 @@ class GPURenderer:
             pr = self.p_dof
             self._bind(pr, tScene=self.t_scene)
             S(pr, "uTexel", (1 / W, 1 / H))
-            S(pr, "uDof", float(p["dof"]))
+            S(pr, "uDof", float(p["dof"]) * RS)
             self.f_dof.use()
             self.v_dof.render(moderngl.TRIANGLES, vertices=3)
             src = self.t_dof

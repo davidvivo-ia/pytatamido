@@ -626,6 +626,7 @@ class Game:
                          grain=0.045 if ph["grain"] else 0.0, tilt=0.0)
                 if not ph["vignette"]:
                     p["vig"] = 0.0
+                p.update(ph.get("grade", {}))          # gradación a medida (carteles)
                 if ph["hud"]:
                     m.draw_hud(hud, self.fonts)
                 self.draw_photo_ui(hud)

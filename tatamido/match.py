@@ -145,8 +145,8 @@ class Match:
             self.update_replay()
         else:
             self.cam.follow(self.f[0], self.f[1], self.tension())
-        self.cam.shake_x = random.uniform(-1, 1) * self.shake_v
-        self.cam.shake_y = random.uniform(-1, 1) * self.shake_v * 0.6
+        self.cam.shake_x = random.uniform(-1, 1) * self.shake_v * RS
+        self.cam.shake_y = random.uniform(-1, 1) * self.shake_v * 0.6 * RS
         self.shake_v *= 0.85
         self.dojo.update(1 / 60, self.intensity)
         self.fx.update(tscale)

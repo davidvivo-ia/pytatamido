@@ -76,8 +76,8 @@ class Dojo:
             d[1] = clamp(d[1], -430, -5)
         if self.rig["rain"]:
             for r in self.rain:
-                r[1] += r[2]
-                r[0] += 1.5
+                r[1] += r[2] * RS
+                r[0] += 1.5 * RS
                 if r[1] > H:
                     r[1] = -10
                     r[0] = random.uniform(-20, W)
@@ -112,8 +112,9 @@ class Dojo:
         rig = self.rig
         self.lantern_pos = []
         zoom = cam.zoom
-        bgz = 0.75 + zoom * 0.25            # parallax de zoom del fondo
-        par = -(cam.x) * 0.35 * zoom         # parallax horizontal
+        bgz = (0.75 + zoom * 0.25) * RS     # parallax de zoom del fondo (en píxeles de render)
+        par = -(cam.x) * 0.35 * zoom * RS    # parallax horizontal
+        r1 = max(1, int(round(RS)))          # grosor de línea de 1 px a escala
         # --- cielo (visible a través de los shōji) ---
         wall_top = int(FLOOR_Y - 420 * bgz + cam.yoff + cam_base_off(zoom))
         floor_back = int(FLOOR_Y - 190 * bgz + cam.yoff + cam_base_off(zoom))
@@ -129,8 +130,8 @@ class Dojo:
         wall_c = rig["wall"]
         pygame.draw.rect(surf, wall_c, (0, wall_top, W, floor_back - wall_top))
         # vigas horizontales
-        for yy in (wall_top + 6, floor_back - 10):
-            pygame.draw.rect(surf, shade(wall_c, 0.7), (0, yy, W, 7))
+        for yy in (wall_top + 6 * RS, floor_back - 10 * RS):
+            pygame.draw.rect(surf, shade(wall_c, 0.7), (0, yy, W, 7 * RS))
         # --- shōji (pared norte) ---
         panel_w = 110 * bgz
         n_panels = 12
@@ -142,58 +143,60 @@ class Dojo:
             px = x0 + i * panel_w
             if i in (5, 6):
                 continue  # hueco del tokonoma
-            rect = pygame.Rect(int(px), wall_top + 18, int(panel_w) - 6, floor_back - wall_top - 40)
+            rect = pygame.Rect(int(px), wall_top + int(18 * RS), int(panel_w - 6 * RS), int(floor_back - wall_top - 40 * RS))
             pygame.draw.rect(surf, glow_c, rect)
             # sombra del pino exterior que se mece con el viento
             if rig["lanterns"] < 0.6:
                 sway = self.wind * 14 * bgz
-                bkey = rect.size
+                bkey = (rect.size, RS)
                 if getattr(self, "_branch_key", None) != bkey:
                     # sombra del pino: se dibuja una vez por tamaño de panel y se desplaza con el viento
-                    branch = pygame.Surface((rect.w + 40, rect.h), pygame.SRCALPHA)
+                    m = int(20 * RS)
+                    branch = pygame.Surface((rect.w + 2 * m, rect.h), pygame.SRCALPHA)
                     for b in range(3):
                         by = rect.h * (0.15 + 0.3 * b)
-                        pts = [(20 + b * 20, by), (20 + rect.w * 0.4, by - 14 + b * 6), (20 + rect.w * 0.95, by + 10 - b * 8)]
-                        pygame.draw.lines(branch, (60, 40, 30, 70), False, pts, 5)
+                        pts = [(m + b * m, by), (m + rect.w * 0.4, by + (-14 + b * 6) * RS), (m + rect.w * 0.95, by + (10 - b * 8) * RS)]
+                        pygame.draw.lines(branch, (60, 40, 30, 70), False, pts, int(5 * RS))
                         for k in range(6):
-                            qx, qy = pts[1][0] + k * 12 - 30, pts[1][1] + math.sin(k) * 10
-                            pygame.draw.circle(branch, (50, 40, 30, 55), (int(qx), int(qy)), 9)
+                            qx, qy = pts[1][0] + (k * 12 - 30) * RS, pts[1][1] + math.sin(k) * 10 * RS
+                            pygame.draw.circle(branch, (50, 40, 30, 55), (int(qx), int(qy)), int(9 * RS))
                     self._branch, self._branch_key = branch, bkey
-                surf.blit(self._branch, (rect.x - 20 + int(sway), rect.y), area=pygame.Rect(20 - int(sway), 0, rect.w, rect.h))
+                m = int(20 * RS)
+                surf.blit(self._branch, (rect.x - m + int(sway), rect.y), area=pygame.Rect(m - int(sway), 0, rect.w, rect.h))
             # celosía
             for k in range(1, 4):
-                pygame.draw.line(surf, frame_c, (rect.x + rect.w * k / 4, rect.y), (rect.x + rect.w * k / 4, rect.bottom), 2)
+                pygame.draw.line(surf, frame_c, (rect.x + rect.w * k / 4, rect.y), (rect.x + rect.w * k / 4, rect.bottom), 2 * r1)
             for k in range(1, 6):
-                pygame.draw.line(surf, frame_c, (rect.x, rect.y + rect.h * k / 6), (rect.right, rect.y + rect.h * k / 6), 2)
-            pygame.draw.rect(surf, frame_c, rect, 4)
+                pygame.draw.line(surf, frame_c, (rect.x, rect.y + rect.h * k / 6), (rect.right, rect.y + rect.h * k / 6), 2 * r1)
+            pygame.draw.rect(surf, frame_c, rect, 4 * r1)
         # --- tokonoma: pergamino 道 y rama de arce ---
         tx = int(x0 + 5 * panel_w)
-        tw = int(panel_w * 2 - 6)
-        trect = pygame.Rect(tx, wall_top + 18, tw, floor_back - wall_top - 40)
+        tw = int(panel_w * 2 - 6 * RS)
+        trect = pygame.Rect(tx, wall_top + int(18 * RS), tw, int(floor_back - wall_top - 40 * RS))
         pygame.draw.rect(surf, shade(wall_c, 0.45), trect)
-        pygame.draw.rect(surf, shade(wall_c, 0.9), trect, 5)
-        scroll = pygame.Rect(trect.centerx - int(26 * bgz), trect.y + 14, int(52 * bgz), trect.h - 60)
+        pygame.draw.rect(surf, shade(wall_c, 0.9), trect, 5 * r1)
+        scroll = pygame.Rect(trect.centerx - int(26 * bgz), trect.y + int(14 * RS), int(52 * bgz), trect.h - int(60 * RS))
         pygame.draw.rect(surf, mixc((238, 228, 205), rig["ambient"], 0.3), scroll)
-        pygame.draw.rect(surf, (90, 70, 50), (scroll.x - 4, scroll.y - 4, scroll.w + 8, 6))
-        pygame.draw.rect(surf, (90, 70, 50), (scroll.x - 4, scroll.bottom - 2, scroll.w + 8, 6))
+        pygame.draw.rect(surf, (90, 70, 50), (scroll.x - 4 * RS, scroll.y - 4 * RS, scroll.w + 8 * RS, 6 * RS))
+        pygame.draw.rect(surf, (90, 70, 50), (scroll.x - 4 * RS, scroll.bottom - 2 * RS, scroll.w + 8 * RS, 6 * RS))
         draw_kanji_do(surf, scroll.centerx, scroll.centery, int(44 * bgz), (24, 18, 20), fonts)
         # rama de arce rojo
         bx, by = trect.x + int(22 * bgz), trect.bottom - int(40 * bgz)
-        pygame.draw.lines(surf, (70, 45, 30), False, [(bx, by), (bx + 18 * bgz, by - 30 * bgz), (bx + 44 * bgz, by - 48 * bgz)], 3)
+        pygame.draw.lines(surf, (70, 45, 30), False, [(bx, by), (bx + 18 * bgz, by - 30 * bgz), (bx + 44 * bgz, by - 48 * bgz)], 3 * r1)
         leaf_c = mixc((178, 34, 34), rig["ambient"], 0.3)
-        for lx, ly in ((bx + 12, by - 24), (bx + 28, by - 42), (bx + 44 * bgz, by - 52 * bgz)):
+        for lx, ly in ((bx + 12 * RS, by - 24 * RS), (bx + 28 * RS, by - 42 * RS), (bx + 44 * bgz, by - 52 * bgz)):
             if self.leaf is not None and (lx, ly) == (bx + 44 * bgz, by - 52 * bgz):
                 continue
             pygame.draw.polygon(surf, leaf_c, [(lx, ly - 8 * bgz), (lx + 7 * bgz, ly), (lx, ly + 6 * bgz), (lx - 7 * bgz, ly)])
         if self.leaf is not None:
             lx, ly = cam.P(self.leaf[0], self.leaf[1])
             pts = [rot(0, -8, self.leaf[2]), rot(7, 0, self.leaf[2]), rot(0, 6, self.leaf[2]), rot(-7, 0, self.leaf[2])]
-            pygame.draw.polygon(surf, leaf_c, [(lx + px * zoom, ly + py * zoom) for px, py in pts])
+            pygame.draw.polygon(surf, leaf_c, [(lx + px * zoom * RS, ly + py * zoom * RS) for px, py in pts])
         # --- farolillos ---
         if rig["lanterns"] > 0.05:
             for i, lx in enumerate((x0 + panel_w * 1.5, x0 + panel_w * 4.5, x0 + panel_w * 7.5, x0 + panel_w * 10.5)):
                 flick = 0.85 + 0.15 * math.sin(self.t * 9 + i * 1.7) * math.sin(self.t * 3.3 + i)
-                ly = wall_top + 40
+                ly = wall_top + 40 * RS
                 lw, lh = int(26 * bgz), int(40 * bgz)
                 k = rig["lanterns"] * flick
                 self.lantern_pos.append((lx, ly + lh / 2, k))
@@ -203,10 +206,10 @@ class Dojo:
                         g = int(16 * k * (4 - r) / 3)
                         pygame.draw.circle(lan, (g * 2, int(g * 1.2), g // 2), (lw * 3, lh * 3), int(lw * (1.0 + r * 0.8)))
                     surf.blit(lan, (lx - lw * 3, ly - lh * 3 + lh // 2), special_flags=pygame.BLEND_ADD)
-                pygame.draw.line(surf, (40, 30, 24), (lx, wall_top), (lx, ly), 2)
+                pygame.draw.line(surf, (40, 30, 24), (lx, wall_top), (lx, ly), 2 * r1)
                 pygame.draw.ellipse(surf, mixc((250, 190, 110), (255, 230, 180), flick - 0.8), (lx - lw // 2, ly, lw, lh))
                 for k in range(1, 4):
-                    pygame.draw.line(surf, (150, 90, 50), (lx - lw // 2, ly + lh * k // 4), (lx + lw // 2, ly + lh * k // 4), 1)
+                    pygame.draw.line(surf, (150, 90, 50), (lx - lw // 2, ly + lh * k // 4), (lx + lw // 2, ly + lh * k // 4), r1)
         # --- suelo: tatami en perspectiva ---
         if not gpu:
             self.draw_floor(surf, cam, floor_back)
@@ -216,8 +219,8 @@ class Dojo:
     def floor_pt(self, cam, wx, d):
         """Punto del suelo: wx en cm, d profundidad 0 (plano de combate) .. 1 (pared)."""
         k = 1 - 0.42 * d
-        sx = W / 2 + (wx - cam.x) * cam.zoom * 0.95 * k + cam.shake_x
-        sy = FLOOR_Y + cam.yoff + cam.shake_y + cam_base_off(cam.zoom) - d * 190 * (0.75 + cam.zoom * 0.25) + 70 * cam.zoom * (1 - d) * 0.0
+        sx = W / 2 + (wx - cam.x) * cam.zoom * 0.95 * k * RS + cam.shake_x
+        sy = FLOOR_Y + cam.yoff + cam.shake_y + cam_base_off(cam.zoom) - d * 190 * (0.75 + cam.zoom * 0.25) * RS
         return sx, sy
 
     def draw_floor(self, surf, cam, floor_back):
@@ -276,14 +279,15 @@ class Dojo:
             look = ids[(n * 5 + 3) % len(ids)]
             facing = 1 if a["x"] < 0 else -1
             px, py = self.floor_pt(cam, a["x"], 0.82)
-            target = 52 * a["h"] * (0.75 + cam.zoom * 0.25) * 1.25
+            target = 52 * a["h"] * (0.75 + cam.zoom * 0.25) * 1.25 * RS
             base_key = (look, facing)
             if base_key not in self._aud_base:
                 fd = dict(id=look, h=1.0, w=1.0, pal=["#FFFFFF"] * 4)
                 d = PoseDummy(fd, facing, n * 0.7)
                 d.sweat = 0.0
-                img, rx, ry = render_figure(d, pose_seiza(fd), 1.1, LIGHT_RIGS[1], ss=2)
-                self._aud_base[base_key] = (img, rx, ry, 1.1 * 125)
+                ua = 1.1 * RS
+                img, rx, ry = render_figure(d, pose_seiza(fd), ua, LIGHT_RIGS[1], ss=2, ow_px=2.0 * RS)
+                self._aud_base[base_key] = (img, rx, ry, ua * 125)
             img, rx, ry, h0 = self._aud_base[base_key]
             k = max(0.2, round(target / h0 * 12) / 12)
             sk = (base_key, k, tkey)
@@ -294,8 +298,8 @@ class Dojo:
                 if len(self._aud_scaled) > 400:
                     self._aud_scaled.clear()
                 self._aud_scaled[sk] = sc_img
-            lean = a["lean"] * 6 * facing
-            bob = -abs(math.sin(self.t * 12 + a["bob"])) * 4 * a["arms"]
+            lean = a["lean"] * 6 * facing * RS
+            bob = -abs(math.sin(self.t * 12 + a["bob"])) * 4 * a["arms"] * RS
             surf.blit(sc_img, (int(px + lean - rx * k), int(py + bob - ry * k)))
 
     def draw_beams(self, surf, cam, layer, intensity_override=None):
@@ -304,33 +308,41 @@ class Dojo:
         a = rig["beam_a"] if intensity_override is None else intensity_override
         if not self.cfg.get("beams", True):
             a = 0
-        bgz = 0.75 + cam.zoom * 0.25
+        bgz = (0.75 + cam.zoom * 0.25) * RS
         wall_top = int(FLOOR_Y - 420 * bgz + cam.yoff + cam_base_off(cam.zoom))
+        R_ = RS
         if a > 1:
             for i in range(4):
-                x = W * 0.12 + i * W * 0.22 - cam.x * 0.3 * cam.zoom
-                sway = self.wind * 10
-                poly = [(x - 20 + sway, wall_top), (x + 70 + sway, wall_top), (x + 420, FLOOR_Y + 60), (x + 160, FLOOR_Y + 60)]
+                x = W * 0.12 + i * W * 0.22 - cam.x * 0.3 * cam.zoom * R_
+                sway = self.wind * 10 * R_
+                fy = FLOOR_Y + 60 * R_
+                poly = [(x - 20 * R_ + sway, wall_top), (x + 70 * R_ + sway, wall_top), (x + 420 * R_, fy), (x + 160 * R_, fy)]
                 pygame.draw.polygon(layer, (*rig["beam"], int(a)), poly)
-                pygame.draw.polygon(layer, (*rig["beam"], int(a * 0.5)), [(x + sway, wall_top), (x + 50 + sway, wall_top), (x + 330, FLOOR_Y + 60), (x + 250, FLOOR_Y + 60)])
+                pygame.draw.polygon(layer, (*rig["beam"], int(a * 0.5)), [(x + sway, wall_top), (x + 50 * R_ + sway, wall_top), (x + 330 * R_, fy), (x + 250 * R_, fy)])
         if self.single_beam > 0.05 and intensity_override is None:
             # un único haz cenital (Kokyū nage / Kiai)
             cx = W / 2
-            pygame.draw.polygon(layer, (255, 230, 190, int(70 * self.single_beam)), [(cx - 60, -10), (cx + 60, -10), (cx + 260, FLOOR_Y + 40), (cx - 260, FLOOR_Y + 40)])
+            fy = FLOOR_Y + 40 * R_
+            pygame.draw.polygon(layer, (255, 230, 190, int(70 * self.single_beam)), [(cx - 60 * R_, -10), (cx + 60 * R_, -10), (cx + 260 * R_, fy), (cx - 260 * R_, fy)])
         # polvo
         dust_a = int(min(160, 90 + a * 2) * (0.5 + 0.5 * (1 if a > 1 else rig["lanterns"])))
         for d in self.dust:
             sx, sy = cam.P(d[0], d[1])
             if 0 <= sx < W and 0 <= sy < H:
-                r = 1 if d[2] < 0.6 else 2
+                r = max(1, int((1 if d[2] < 0.6 else 2) * RS))
                 dc = rig["beam"] if a > 1 else (255, 200, 150)
                 pygame.draw.circle(layer, (dc[0], dc[1], dc[2], int(dust_a * d[2])), (int(sx), int(sy)), r)
 
     def draw_rain(self, surf):
         if not self.rig["rain"]:
             return
+        # trazos largos, finos y translúcidos (desenfoque de movimiento); los más rápidos, más cerca y más claros
+        w = max(1, int(RS * 0.75))
         for r in self.rain:
-            pygame.draw.line(surf, (170, 180, 200), (r[0], r[1]), (r[0] - 2, r[1] - r[2] * 1.6), 1)
+            k = (r[2] - 8) / 6
+            a = int(55 + 70 * k)
+            ln = r[2] * (3.2 + 1.6 * k) * RS
+            pygame.draw.line(surf, (190, 200, 222, a), (r[0], r[1]), (r[0] - ln * 0.12, r[1] - ln), w)
 
     def vignette(self, strength):
         key = int(strength) // 10
