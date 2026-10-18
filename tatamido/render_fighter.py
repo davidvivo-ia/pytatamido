@@ -1584,7 +1584,7 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
             pieces.extend((ax + ox, ay + oy) + tuple(rest) for ax, ay, *rest in mine)
     else:
         img, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=ss, outline=ocol, ow_px=ow)
-    surf.blit(img, (int(x0 - rx), int(y0 - ry)))
+    drawn = surf.blit(img, (int(x0 - rx), int(y0 - ry)))
     # estela: cuando el luchador registra una nueva pose de estela, se guarda su silueta real
     if f.trail and getattr(f, "_trail_seen", None) is not f.trail[-1]:
         f._trail_seen = f.trail[-1]
@@ -1602,19 +1602,21 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
             p1 = cam.P(at.left, at.top)
             p2 = cam.P(at.right, at.bottom)
             pygame.draw.rect(surf, (255, 60, 60), (p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]), 2)
+    return drawn.inflate(int(cam.S(40)), int(cam.S(40))) if debug else drawn
 
 
 def draw_trail(layer, f: Fighter, cam: Camera):
     """Estelas (afterimages): siluetas de las poses recientes en el color del jugador, que se desvanecen."""
     imgs = [t for t in getattr(f, "_trail_imgs", []) if f.anim_t - t[5] < 0.26]
     f._trail_imgs = imgs
+    rects = []
     for sil, wx, wy, rx, ry, t0 in imgs:
         age = (f.anim_t - t0) / 0.26
         x0, y0 = cam.P(wx, wy)
         sil.set_alpha(int(105 * (1 - age)))
-        layer.blit(sil, (int(x0 - rx), int(y0 - ry)))
+        rects.append(layer.blit(sil, (int(x0 - rx), int(y0 - ry))))
     if imgs or not f.trail:
-        return
+        return rects
     sc = f.scale
     for pose, x, y, fac, life in f.trail:
         a = int(70 * life / 14)
@@ -1622,8 +1624,9 @@ def draw_trail(layer, f: Fighter, cam: Camera):
         J = {k: cam.P(x + v[0] * fac * sc, y + v[1] * sc) for k, v in pose.items()}
         r = max(1, int(cam.S(7 * sc * f.width)))
         for a_, b_ in (("sh_l", "el_l"), ("el_l", "hd_l"), ("sh_r", "el_r"), ("el_r", "hd_r"), ("hip", "kn_l"), ("kn_l", "ft_l"), ("hip", "kn_r"), ("kn_r", "ft_r"), ("hip", "chest")):
-            pygame.draw.line(layer, c, J[a_], J[b_], r * 2)
-        pygame.draw.circle(layer, c, (int(J["head"][0]), int(J["head"][1])), int(cam.S(13 * sc)))
+            rects.append(pygame.draw.line(layer, c, J[a_], J[b_], r * 2))
+        rects.append(pygame.draw.circle(layer, c, (int(J["head"][0]), int(J["head"][1])), int(cam.S(13 * sc))))
+    return rects
 
 
 # ─────────────────────────────────────────────────────────────────────────────

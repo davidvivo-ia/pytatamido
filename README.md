@@ -101,6 +101,16 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
 Si hay OpenGL 3.3 y `moderngl`, el juego usa un pipeline de shaders propio; si no, cae solo al
 renderer de pygame. pygame dibuja las capas (fondo, luchadores, efectos, HUD) y la GPU hace la luz:
 
+- **Resolución nativa:** el juego renderiza a 1080p, 1440p o 4K (`--res`, u opción *Resolución*; en
+  `auto` elige por el escritorio: 1080p en Full HD, 1440p en QHD y en 4K). Las capas del mundo se
+  dibujan a esa resolución; la interfaz se compone en 1280×720 lógicos y la GPU la reescala. Sólo se
+  borra y se sube a la GPU la zona que cambió en cada fotograma (luchadores, público).
+- **Pared horneada:** techo con pilares y viga nageshi, enlucido de barro, pared de madera, doce shōji,
+  tokonoma y farolillos se hornean una vez por luz de asalto en una lámina de alta resolución con
+  máscara de materiales; la GPU la proyecta con la cámara (parallax incluido) y le pinta a resolución
+  nativa washi con nubes de pulpa y fibras de kōzo, madera con veta, anillos y poros, y enlucido con paja.
+  Al cambiar de asalto funde la lámina anterior con la nueva al ritmo de la luz. Los farolillos iluminan
+  la madera de alrededor y la sombra de un pino de jardín cruza varios shōji.
 - **Suelo procedural por píxel:** tatami de igusa con heri de algodón índigo, juntas, desgaste
   central y brillo distinto en cada estera; zona roja de seguridad; tarima de cedro con veta.
 - **Luz de los shōji:** franjas de sol que cruzan el tatami con la sombra de la celosía (kumiko),
@@ -138,7 +148,8 @@ python Tatamydo.py --renderer gpu    # auto (por defecto) | gpu | cpu
 
 ```bash
 pip install pygame-ce numpy moderngl # moderngl activa los shaders; numpy, el sonido
-python Tatamydo.py                   # ventana 1280×720 (F11: pantalla completa)
+python Tatamydo.py                   # resolución automática (F11: pantalla completa)
+python Tatamydo.py --res 1440p       # 720p | 1080p | 1440p | 4k (renderer GPU)
 python Tatamydo.py --preset cine     # portatil | bajo | medio | alto | ultra | cine
 python Tatamydo.py --photo-mode      # arranca directo en el Modo Foto
 python Tatamydo.py --ai-vs-ai        # espectador
@@ -147,8 +158,9 @@ python -m pytest -q                  # tests de simulación
 python tools/carteles.py             # regenera las imágenes de docs/ en 4K (--rs 1 --only 01 para un vistazo)
 ```
 
-`TATAMIDO_RS=2` o `3` multiplica la resolución interna (1440p, 4K): cámara, dojo, tinta y shaders
-escalan sus medidas en píxeles. Es el modo de los carteles; la interfaz del juego sigue pensada para 720p.
+Por dentro, `--res` fija `TATAMIDO_RS` (1,5 = 1080p, 2 = 1440p, 3 = 4K): cámara, dojo, tinta y shaders
+escalan sus medidas en píxeles, y los tejidos ganan una segunda octava (el hilo, los poros, las hebras)
+que sólo aparece cuando hay píxeles para verla. El renderer CPU funciona a 720p.
 
 ## Controles
 

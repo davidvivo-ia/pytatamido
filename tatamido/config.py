@@ -13,6 +13,8 @@ TITLE = "TATAMI: DŌ — Edición 2026"
 # todo lo que se mide en píxeles (cámara, dojo, tinta, shaders) se multiplica por RS.
 RS = max(1.0, float(os.environ.get("TATAMIDO_RS", "1") or 1))
 W, H = int(round(1280 * RS)), int(round(720 * RS))
+LW, LH = 1280, 720          # resolución lógica de la interfaz: la GPU la reescala a la de render
+RESOLUTIONS = {"720p": 1.0, "1080p": 1.5, "1440p": 2.0, "4k": 3.0}
 FPS = 60
 ROUND_TIME = 99
 VIT_MAX = 1000

@@ -64,6 +64,7 @@ class Dojo:
             self.rig[k] = lerp(self.rig[k], self.target_rig[k], 0.03)
         self.rig["rain"] = self.target_rig["rain"]
         self.gpu_rig = lerp_tree(self.gpu_rig, self.target_gpu, 0.03)
+        self.plate_mix = min(1.0, getattr(self, "plate_mix", 1.0) + (1.0 - getattr(self, "plate_mix", 1.0)) * 0.03 + 1e-4)
         self.rig["name"] = self.target_rig["name"]
         self.wind = math.sin(self.t * 0.7) * 0.6 + math.sin(self.t * 1.9) * 0.3
         for d in self.dust:
@@ -107,109 +108,222 @@ class Dojo:
             self.decals.pop(0)
 
     # ----- dibujo -----
-    def draw(self, surf, cam: Camera, fonts: Fonts, lut_bw=False, gpu=False):
-        """Con gpu=True no se dibuja el suelo (lo pinta el shader) ni los halos (los hace el bloom)."""
-        rig = self.rig
-        self.lantern_pos = []
+    PLATE_U = (-420.0, 1740.0)    # extensión de la lámina de pared en unidades de pared (≈ cm; un shōji = 110)
+    PLATE_V = (-300.0, 236.0)     # del techo (negativo) al zócalo; 0 es el borde superior de la pared
+    MAT = {"paper": (255, 0, 0), "wood": (0, 255, 0), "plaster": (0, 0, 255), "none": (0, 0, 0)}
+
+    def wall_geom(self, cam):
+        """Transformación pared → pantalla: x = x0 + u·bgz, y = wall_top + v·bgz (parallax incluido)."""
         zoom = cam.zoom
-        bgz = (0.75 + zoom * 0.25) * RS     # parallax de zoom del fondo (en píxeles de render)
-        par = -(cam.x) * 0.35 * zoom * RS    # parallax horizontal
-        r1 = max(1, int(round(RS)))          # grosor de línea de 1 px a escala
-        # --- cielo (visible a través de los shōji) ---
-        wall_top = int(FLOOR_Y - 420 * bgz + cam.yoff + cam_base_off(zoom))
-        floor_back = int(FLOOR_Y - 190 * bgz + cam.yoff + cam_base_off(zoom))
-        skey = (tuple(rig["sky_top"]), tuple(rig["sky_bot"]), floor_back)
-        if getattr(self, "_sky_key", None) != skey:
-            sky = pygame.Surface((W, max(1, floor_back)))
-            for i in range(0, floor_back, 4):
-                t = i / max(1, floor_back)
-                sky.fill(mixc(rig["sky_top"], rig["sky_bot"], t), (0, i, W, 4))
-            self._sky, self._sky_key = sky, skey
-        surf.blit(self._sky, (0, 0))
-        # --- pared de madera ---
+        bgz = (0.75 + zoom * 0.25) * RS
+        par = -(cam.x) * 0.35 * zoom * RS
+        base = FLOOR_Y + cam.yoff + cam_base_off(zoom)
+        return W / 2 + par - 110 * bgz * 6, base - 420 * bgz, base - 190 * bgz, bgz
+
+    def _draw_wall(self, surf, x0, wall_top, floor_back, bgz, fonts, sway=0.0, mat=None, rig=None):
+        """Techo con vigas, pared de madera, doce shōji, tokonoma y farolillos, en cualquier escala.
+        Con `mat` pinta a la vez la máscara de materiales para la GPU (R papel, G madera, B enlucido)."""
+        rig = rig or self.rig
+        k = bgz
+        Wd = surf.get_width()
+        M = self.MAT
+
+        def R(rect, col, m, width=0):
+            pygame.draw.rect(surf, col, rect, width)
+            if mat is not None:
+                pygame.draw.rect(mat, M[m], rect, width)
+
+        def Ln(col, m, a, b, w):
+            pygame.draw.line(surf, col, a, b, w)
+            if mat is not None:
+                pygame.draw.line(mat, M[m], a, b, w)
+
         wall_c = rig["wall"]
-        pygame.draw.rect(surf, wall_c, (0, wall_top, W, floor_back - wall_top))
-        # vigas horizontales
-        for yy in (wall_top + 6 * RS, floor_back - 10 * RS):
-            pygame.draw.rect(surf, shade(wall_c, 0.7), (0, yy, W, 7 * RS))
-        # --- shōji (pared norte) ---
-        panel_w = 110 * bgz
-        n_panels = 12
-        x0 = W / 2 + par - panel_w * n_panels / 2
-        shoji_c = rig["shoji"]
         frame_c = shade(wall_c, 0.55)
-        glow_c = mixc(shoji_c, rig["sky_bot"], 0.35)
-        for i in range(n_panels):
-            px = x0 + i * panel_w
+        glow_c = mixc(rig["shoji"], rig["sky_bot"], 0.35)
+        lw = lambda v: max(1, int(round(v * k)))
+        # --- techo: enlucido alto (kokabe) entre pilares, viga nageshi y tablas del techo en fuga ---
+        top = int(wall_top - 300 * k)
+        ceil_c = shade(wall_c, 0.36)
+        R((0, min(0, top), Wd, int(wall_top - min(0, top)) + 1), ceil_c, "wood")
+        cy0, cy1 = wall_top - 300 * k, wall_top - 122 * k
+        cx = x0 + 660 * k
+        for i in range(-28, 29):                                  # tablas: convergen hacia la pared
+            xb = cx + i * 55 * k
+            xt = cx + i * 55 * k * 1.9
+            Ln(shade(wall_c, 0.28), "wood", (xt, cy0), (xb, cy1), lw(1.6))
+        for j in range(7):                                        # listones (sao-buchi), más juntos al fondo
+            t = (j / 6) ** 1.7
+            y = cy1 - (cy1 - cy0) * t
+            R((0, int(y - 2.5 * k), Wd, lw(4 + 3 * t)), shade(wall_c, 0.5 - 0.1 * t), "wood")
+        R((0, int(cy1), Wd, int(wall_top - 14 * k - cy1)), mixc(shade(wall_c, 1.35), (196, 176, 146), 0.55), "plaster")
+        for i in range(-4, 16):                                   # pilares (hashira) cada dos shōji
+            R((int(x0 + i * 220 * k - 6 * k), int(cy1), lw(12), int(wall_top - cy1)), shade(wall_c, 0.62), "wood")
+        R((0, int(wall_top - 16 * k), Wd, lw(16)), shade(wall_c, 0.66), "wood")                    # nageshi
+        R((0, int(wall_top - 2 * k), Wd, lw(3)), shade(wall_c, 0.35), "wood")
+        # --- pared de madera ---
+        R((0, int(wall_top), Wd, int(floor_back - wall_top) + 1), wall_c, "wood")
+        for yy in (wall_top + 5 * k, floor_back - 9 * k):
+            R((0, int(yy), Wd, lw(6.5)), shade(wall_c, 0.7), "wood")
+        # --- shōji (pared norte) ---
+        panel_w = 110 * k
+        for i in range(12):
             if i in (5, 6):
                 continue  # hueco del tokonoma
-            rect = pygame.Rect(int(px), wall_top + int(18 * RS), int(panel_w - 6 * RS), int(floor_back - wall_top - 40 * RS))
-            pygame.draw.rect(surf, glow_c, rect)
+            px = x0 + i * panel_w
+            rect = pygame.Rect(int(px), int(wall_top + 16 * k), int(panel_w - 5.5 * k), int(floor_back - wall_top - 36 * k))
+            R(rect, glow_c, "paper")
             # sombra del pino exterior que se mece con el viento
             if rig["lanterns"] < 0.6:
-                sway = self.wind * 14 * bgz
-                bkey = (rect.size, RS)
+                # un solo pino detrás de la pared: su sombra cruza varios shōji (se recorta en cada uno)
+                bkey = (int(1320 * k), rect.h)
                 if getattr(self, "_branch_key", None) != bkey:
-                    # sombra del pino: se dibuja una vez por tamaño de panel y se desplaza con el viento
-                    m = int(20 * RS)
-                    branch = pygame.Surface((rect.w + 2 * m, rect.h), pygame.SRCALPHA)
-                    for b in range(3):
-                        by = rect.h * (0.15 + 0.3 * b)
-                        pts = [(m + b * m, by), (m + rect.w * 0.4, by + (-14 + b * 6) * RS), (m + rect.w * 0.95, by + (10 - b * 8) * RS)]
-                        pygame.draw.lines(branch, (60, 40, 30, 70), False, pts, int(5 * RS))
-                        for k in range(6):
-                            qx, qy = pts[1][0] + (k * 12 - 30) * RS, pts[1][1] + math.sin(k) * 10 * RS
-                            pygame.draw.circle(branch, (50, 40, 30, 55), (int(qx), int(qy)), int(9 * RS))
-                    self._branch, self._branch_key = branch, bkey
-                m = int(20 * RS)
-                surf.blit(self._branch, (rect.x - m + int(sway), rect.y), area=pygame.Rect(m - int(sway), 0, rect.w, rect.h))
-            # celosía
-            for k in range(1, 4):
-                pygame.draw.line(surf, frame_c, (rect.x + rect.w * k / 4, rect.y), (rect.x + rect.w * k / 4, rect.bottom), 2 * r1)
-            for k in range(1, 6):
-                pygame.draw.line(surf, frame_c, (rect.x, rect.y + rect.h * k / 6), (rect.right, rect.y + rect.h * k / 6), 2 * r1)
-            pygame.draw.rect(surf, frame_c, rect, 4 * r1)
+                    self._branch, self._branch_key = self._pine_shadow(int(1320 * k), rect.h, k), bkey
+                ox = int(x0)
+                surf.blit(self._branch, (rect.x, rect.y), area=pygame.Rect(rect.x - ox - int(sway), 0, rect.w, rect.h))
+            # celosía (kumiko)
+            for q in range(1, 4):
+                Ln(frame_c, "wood", (rect.x + rect.w * q / 4, rect.y), (rect.x + rect.w * q / 4, rect.bottom), lw(1.8))
+            for q in range(1, 6):
+                Ln(frame_c, "wood", (rect.x, rect.y + rect.h * q / 6), (rect.right, rect.y + rect.h * q / 6), lw(1.8))
+            R(rect, frame_c, "wood", lw(3.6))
         # --- tokonoma: pergamino 道 y rama de arce ---
         tx = int(x0 + 5 * panel_w)
-        tw = int(panel_w * 2 - 6 * RS)
-        trect = pygame.Rect(tx, wall_top + int(18 * RS), tw, int(floor_back - wall_top - 40 * RS))
-        pygame.draw.rect(surf, shade(wall_c, 0.45), trect)
-        pygame.draw.rect(surf, shade(wall_c, 0.9), trect, 5 * r1)
-        scroll = pygame.Rect(trect.centerx - int(26 * bgz), trect.y + int(14 * RS), int(52 * bgz), trect.h - int(60 * RS))
-        pygame.draw.rect(surf, mixc((238, 228, 205), rig["ambient"], 0.3), scroll)
-        pygame.draw.rect(surf, (90, 70, 50), (scroll.x - 4 * RS, scroll.y - 4 * RS, scroll.w + 8 * RS, 6 * RS))
-        pygame.draw.rect(surf, (90, 70, 50), (scroll.x - 4 * RS, scroll.bottom - 2 * RS, scroll.w + 8 * RS, 6 * RS))
-        draw_kanji_do(surf, scroll.centerx, scroll.centery, int(44 * bgz), (24, 18, 20), fonts)
-        # rama de arce rojo
-        bx, by = trect.x + int(22 * bgz), trect.bottom - int(40 * bgz)
-        pygame.draw.lines(surf, (70, 45, 30), False, [(bx, by), (bx + 18 * bgz, by - 30 * bgz), (bx + 44 * bgz, by - 48 * bgz)], 3 * r1)
+        trect = pygame.Rect(tx, int(wall_top + 16 * k), int(panel_w * 2 - 5.5 * k), int(floor_back - wall_top - 36 * k))
+        R(trect, shade(wall_c, 0.45), "wood")
+        R(trect, shade(wall_c, 0.9), "wood", lw(4.5))
+        scroll = pygame.Rect(trect.centerx - int(26 * k), trect.y + int(13 * k), int(52 * k), trect.h - int(55 * k))
+        R(scroll, mixc((238, 228, 205), rig["ambient"], 0.3), "paper")
+        R((scroll.x - 4 * k, scroll.y - 4 * k, scroll.w + 8 * k, 5.5 * k), (90, 70, 50), "wood")
+        R((scroll.x - 4 * k, scroll.bottom - 2 * k, scroll.w + 8 * k, 5.5 * k), (90, 70, 50), "wood")
+        draw_kanji_do(surf, scroll.centerx, scroll.centery, int(44 * k), (24, 18, 20), fonts)
+        bx, by = trect.x + int(22 * k), trect.bottom - int(40 * k)
+        pygame.draw.lines(surf, (70, 45, 30), False, [(bx, by), (bx + 18 * k, by - 30 * k), (bx + 44 * k, by - 48 * k)], lw(2.7))
         leaf_c = mixc((178, 34, 34), rig["ambient"], 0.3)
-        for lx, ly in ((bx + 12 * RS, by - 24 * RS), (bx + 28 * RS, by - 42 * RS), (bx + 44 * bgz, by - 52 * bgz)):
-            if self.leaf is not None and (lx, ly) == (bx + 44 * bgz, by - 52 * bgz):
+        for i, (lx, ly) in enumerate(((bx + 11 * k, by - 22 * k), (bx + 26 * k, by - 38 * k), (bx + 44 * k, by - 52 * k))):
+            if i == 2 and self.leaf is not None and mat is None:
                 continue
-            pygame.draw.polygon(surf, leaf_c, [(lx, ly - 8 * bgz), (lx + 7 * bgz, ly), (lx, ly + 6 * bgz), (lx - 7 * bgz, ly)])
+            pygame.draw.polygon(surf, leaf_c, [(lx, ly - 8 * k), (lx + 7 * k, ly), (lx, ly + 6 * k), (lx - 7 * k, ly)])
+        # --- farolillos (cuerpo de papel; la luz la pone cada renderer) ---
+        if rig["lanterns"] > 0.05:
+            for lx in self.lantern_xs(x0, k):
+                ly = wall_top + 36 * k
+                lwid, lh = int(26 * k), int(40 * k)
+                Ln((40, 30, 24), "none", (lx, wall_top - 16 * k), (lx, ly), lw(1.8))
+                body = (lx - lwid // 2, ly, lwid, lh)
+                pygame.draw.ellipse(surf, (250, 205, 135), body)
+                if mat is not None:
+                    pygame.draw.ellipse(mat, M["paper"], body)
+                for q in range(1, 4):
+                    pygame.draw.line(surf, (150, 90, 50), (lx - lwid // 2, ly + lh * q // 4), (lx + lwid // 2, ly + lh * q // 4), lw(0.9))
+
+    @staticmethod
+    def _pine_shadow(w, h, k):
+        """Sombra de un pino de jardín (niwaki) sobre toda la fila de shōji: un tronco que cruza en diagonal,
+        ramas que se afinan y nubes de agujas en almohadillas. Se pinta a un sexto y se amplía: el
+        desenfoque de una sombra lejana sobre papel."""
+        rng = random.Random(11)
+        sc = 1 / 6
+        sw, sh = max(8, int(w * sc)), max(8, int(h * sc))
+        small = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        u = sw / 1320.0                          # px (pequeños) por unidad de pared
+        col = (48, 34, 26)
+        trunk = [(1450 - 120 * t - 40 * math.sin(t * 3), 260 - 300 * t) for t in [i / 10 for i in range(11)]]
+        pads = []
+        for i in range(10):
+            pygame.draw.line(small, (*col, 110), (trunk[i][0] * u, trunk[i][1] * u), (trunk[i + 1][0] * u, trunk[i + 1][1] * u),
+                             max(1, int((26 - 16 * i / 10) * u)))
+        for bi, (t, side) in enumerate(((0.25, -1), (0.42, -1), (0.55, 1), (0.68, -1), (0.8, -1), (0.9, 1))):
+            x0, y0 = trunk[int(t * 10)]
+            ln = 260 + rng.uniform(0, 260)
+            pts = []
+            for j in range(7):
+                q = j / 6
+                pts.append((x0 + side * ln * q, y0 - 40 * q + math.sin(q * 3.1 + bi) * 18))
+            for j in range(6):
+                pygame.draw.line(small, (*col, 100), (pts[j][0] * u, pts[j][1] * u), (pts[j + 1][0] * u, pts[j + 1][1] * u),
+                                 max(1, int((9 - 6 * j / 6) * u)))
+            for j in (2, 4, 6):
+                pads.append((pts[j][0], pts[j][1] - 6, 46 + rng.uniform(0, 30), 20 + rng.uniform(0, 10)))
+        for cx, cy, rx, ry in pads:              # almohadilla: muchas agujas cortas dentro de una nube
+            for _ in range(70):
+                a = rng.uniform(0, 2 * math.pi)
+                r = rng.random() ** 0.5
+                px, py = cx + math.cos(a) * rx * r, cy + math.sin(a) * ry * r
+                d = rng.uniform(-0.6, 0.6) + (-math.pi / 2 if py < cy else math.pi / 2)
+                ln = rng.uniform(6, 13)
+                pygame.draw.line(small, (*col, 46), (px * u, py * u), ((px + math.cos(d) * ln) * u, (py + math.sin(d) * ln * 0.6) * u),
+                                 max(1, int(3 * u)))
+            pygame.draw.ellipse(small, (*col, 34), ((cx - rx * 0.8) * u, (cy - ry * 0.7) * u, rx * 1.6 * u, ry * 1.4 * u))
+        return pygame.transform.smoothscale(small, (w, h))
+
+    @staticmethod
+    def lantern_xs(x0, k):
+        return [x0 + 110 * k * f for f in (1.5, 4.5, 7.5, 10.5)]
+
+    @staticmethod
+    def plate_key(r):
+        return (tuple(r["wall"]), tuple(r["shoji"]), tuple(r["sky_bot"]), tuple(r["ambient"]),
+                r["lanterns"] > 0.05, r["lanterns"] < 0.6, RS)
+
+    def _bake(self, rig, fonts):
+        u0, u1 = self.PLATE_U
+        v0, v1 = self.PLATE_V
+        # densidad: la del juego a 1440p basta (el shader pone el detalle fino); los carteles en 4K, más
+        s = min(1.6 * RS, 2.4 if RS < 2.5 else 3.6)
+        size = (int((u1 - u0) * s), int((v1 - v0) * s))
+        col = pygame.Surface(size)
+        mat = pygame.Surface(size)
+        mat.fill((0, 0, 0))
+        self._draw_wall(col, -u0 * s, -v0 * s, (230 - v0) * s, s, fonts, mat=mat, rig=rig)
+        self._plate_v = getattr(self, "_plate_v", 0) + 1
+        return dict(col=col, mat=mat, rect=(u0, v0, u1 - u0, v1 - v0), version=(id(self), self._plate_v),
+                    key=self.plate_key(rig))
+
+    def ensure_plate(self, fonts):
+        """Lámina de pared a alta resolución para la GPU. Se hornea una sola vez por luz de asalto, con
+        la luz de destino; durante el cambio de asalto el shader funde la anterior con la nueva al mismo
+        ritmo al que se interpola la luz (sin rehornear cada fotograma)."""
+        key = self.plate_key(self.target_rig)
+        cur = getattr(self, "plate", None)
+        if cur is None or cur["key"] != key:
+            new = self._bake(self.target_rig, fonts)
+            self.plate_from = cur
+            self.plate_mix = 1.0 if cur is None or self.plate_key(self.rig) == key else 0.0
+            self.plate = new
+        return self.plate
+
+    def draw(self, surf, cam: Camera, fonts: Fonts, lut_bw=False, gpu=False):
+        """Con gpu=True la pared va en la lámina horneada (la proyecta el shader) y aquí sólo se dibuja
+        lo que se mueve: público y hoja. Tampoco hay suelo ni halos (shader y bloom)."""
+        rig = self.rig
+        x0, wall_top, floor_back, bgz = self.wall_geom(cam)
+        floor_back = int(floor_back)
+        self.lantern_pos = []
+        self.drawn = []              # lo dibujado sobre `surf` (para subir a la GPU sólo esa zona)
+        if rig["lanterns"] > 0.05:
+            for i, lx in enumerate(self.lantern_xs(x0, bgz)):
+                flick = 0.85 + 0.15 * math.sin(self.t * 9 + i * 1.7) * math.sin(self.t * 3.3 + i)
+                ly = wall_top + 36 * bgz
+                lw_, lh = int(26 * bgz), int(40 * bgz)
+                kk = rig["lanterns"] * flick
+                self.lantern_pos.append((lx, ly + lh / 2, kk))
+                if not gpu:
+                    lan = pygame.Surface((lw_ * 6, lh * 6))
+                    for r in range(3, 0, -1):
+                        g = int(16 * kk * (4 - r) / 3)
+                        pygame.draw.circle(lan, (g * 2, int(g * 1.2), g // 2), (lw_ * 3, lh * 3), int(lw_ * (1.0 + r * 0.8)))
+                    surf.blit(lan, (lx - lw_ * 3, ly - lh * 3 + lh // 2), special_flags=pygame.BLEND_ADD)
+        if gpu:
+            self.ensure_plate(fonts)
+        else:
+            self._draw_wall(surf, x0, wall_top, floor_back, bgz, fonts, sway=self.wind * 14 * bgz)
+        zoom = cam.zoom
         if self.leaf is not None:
+            leaf_c = mixc((178, 34, 34), rig["ambient"], 0.3)
             lx, ly = cam.P(self.leaf[0], self.leaf[1])
             pts = [rot(0, -8, self.leaf[2]), rot(7, 0, self.leaf[2]), rot(0, 6, self.leaf[2]), rot(-7, 0, self.leaf[2])]
-            pygame.draw.polygon(surf, leaf_c, [(lx + px * zoom * RS, ly + py * zoom * RS) for px, py in pts])
-        # --- farolillos ---
-        if rig["lanterns"] > 0.05:
-            for i, lx in enumerate((x0 + panel_w * 1.5, x0 + panel_w * 4.5, x0 + panel_w * 7.5, x0 + panel_w * 10.5)):
-                flick = 0.85 + 0.15 * math.sin(self.t * 9 + i * 1.7) * math.sin(self.t * 3.3 + i)
-                ly = wall_top + 40 * RS
-                lw, lh = int(26 * bgz), int(40 * bgz)
-                k = rig["lanterns"] * flick
-                self.lantern_pos.append((lx, ly + lh / 2, k))
-                if not gpu:
-                    lan = pygame.Surface((lw * 6, lh * 6))
-                    for r in range(3, 0, -1):
-                        g = int(16 * k * (4 - r) / 3)
-                        pygame.draw.circle(lan, (g * 2, int(g * 1.2), g // 2), (lw * 3, lh * 3), int(lw * (1.0 + r * 0.8)))
-                    surf.blit(lan, (lx - lw * 3, ly - lh * 3 + lh // 2), special_flags=pygame.BLEND_ADD)
-                pygame.draw.line(surf, (40, 30, 24), (lx, wall_top), (lx, ly), 2 * r1)
-                pygame.draw.ellipse(surf, mixc((250, 190, 110), (255, 230, 180), flick - 0.8), (lx - lw // 2, ly, lw, lh))
-                for k in range(1, 4):
-                    pygame.draw.line(surf, (150, 90, 50), (lx - lw // 2, ly + lh * k // 4), (lx + lw // 2, ly + lh * k // 4), r1)
+            self.drawn.append(pygame.draw.polygon(surf, leaf_c, [(lx + px * zoom * RS, ly + py * zoom * RS) for px, py in pts]))
         # --- suelo: tatami en perspectiva ---
         if not gpu:
             self.draw_floor(surf, cam, floor_back)
@@ -300,7 +414,7 @@ class Dojo:
                 self._aud_scaled[sk] = sc_img
             lean = a["lean"] * 6 * facing * RS
             bob = -abs(math.sin(self.t * 12 + a["bob"])) * 4 * a["arms"] * RS
-            surf.blit(sc_img, (int(px + lean - rx * k), int(py + bob - ry * k)))
+            self.drawn.append(surf.blit(sc_img, (int(px + lean - rx * k), int(py + bob - ry * k))))
 
     def draw_beams(self, surf, cam, layer, intensity_override=None):
         """Haces volumétricos de los shōji y polvo en suspensión (capa aditiva)."""

@@ -7,6 +7,8 @@ import pygame
 from .camera import Camera
 from .config import *
 
+W, H = LW, LH       # carteles y destellos van en la interfaz (resolución lógica)
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  EFECTOS: partículas, tinta sumi-e, ondas, rótulos
 # ─────────────────────────────────────────────────────────────────────────────

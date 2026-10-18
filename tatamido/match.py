@@ -14,6 +14,19 @@ from .moves import Move
 from .inputs import PlayerInput
 from .render_fighter import draw_fighter, draw_trail
 
+def _union(rects):
+    """Rectángulo que abarca todos (None si no hay ninguno), recortado a la pantalla de render."""
+    rects = [r for r in rects if r is not None and r.w > 0 and r.h > 0]
+    if not rects:
+        return None
+    u = rects[0].unionall(rects[1:]).clip(pygame.Rect(0, 0, int(round(1280 * RS)), int(round(720 * RS))))
+    return u if u.w > 0 and u.h > 0 else None
+
+
+# Marcadores y textos se colocan en la resolución lógica de la interfaz; la GPU la reescala.
+# (El camino CPU sólo existe a 720p, donde ambas coinciden.)
+W, H = LW, LH
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  COMBATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -814,26 +827,34 @@ class Match:
             surf.blit(dark, (0, 0))
         surf.blit(self.dojo.vignette(rig["vignette"] + (60 if self.ground else 0)), (0, 0))
 
-    def draw_layers(self, bg, fig, fxl, fonts: Fonts, photo=None, figd=None) -> dict:
-        """Camino GPU: fondo sin suelo, luchadores y efectos en capas separadas; devuelve los parámetros de luz."""
+    def draw_layers(self, bg, fig, fxl, fonts: Fonts, photo=None, figd=None, dirty=None) -> dict:
+        """Camino GPU: fondo sin suelo, luchadores y efectos en capas separadas; devuelve los parámetros de luz.
+
+        Con `dirty` (zonas del fotograma anterior) sólo se borra lo que se pintó entonces y se devuelve en
+        p["dirty"] la zona que hay que subir a la GPU: a 1440p o 4K las capas son grandes y casi vacías."""
         from .gpu import scene_params
         rig = self.dojo.rig
         lut = photo["lut"] if photo else "Natural"
         bw = lut in ("Kurosawa B/N", "Daido Moriyama")
-        bg.fill((0, 0, 0, 0))
-        fig.fill((0, 0, 0, 0))
+        prev = dirty.get("prev") if dirty else None
+        for name, s in (("bg", bg), ("fig", fig), ("fig", figd)):
+            if s is None:
+                continue
+            if prev is None:
+                s.fill((0, 0, 0, 0))
+            elif prev.get(name) is not None:
+                s.fill((0, 0, 0, 0), prev[name])
         fxl.fill((0, 0, 0, 0))
-        if figd is not None:
-            figd.fill((0, 0, 0, 0))
         self.dojo.draw(bg, self.cam, fonts, bw, gpu=True)
         self.dojo.draw_beams(None, self.cam, fxl, intensity_override=0)
         order = sorted(self.f, key=lambda f: (f.state in (Fighter.ATTACK, Fighter.KIAI, Fighter.THROWING), -abs(f.y)))
+        fr = []
         for f in order:
-            draw_trail(fig, f, self.cam)        # las estelas van detrás de los cuerpos
+            fr += draw_trail(fig, f, self.cam) or []       # las estelas van detrás de los cuerpos
         cfg = dict(self.cfg, shadows=False)
         pieces: list = []
         for f in order:
-            draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd, pieces=pieces)
+            fr.append(draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd, pieces=pieces))
         self.fx.draw_world(fxl, self.cam, fxl)
         self.dojo.draw_rain(fxl)
         extra = {}
@@ -848,6 +869,13 @@ class Match:
         if not self.access.get("shake", True):
             extra["tilt"] = 0.0
         extra["pieces"] = pieces
+        if dirty is not None:
+            new = dict(bg=_union(getattr(self.dojo, "drawn", [])), fig=_union(fr))
+            dirty["new"] = new
+            if prev is None:
+                extra["dirty"] = None                      # primer fotograma: subida completa
+            else:
+                extra["dirty"] = {k: _union([r for r in (prev.get(k), new[k]) if r is not None]) for k in ("bg", "fig")}
         return scene_params(self.dojo, self.cam, self.f, self.fx, self.cfg, extra)
 
     def draw_hud(self, surf, fonts: Fonts):

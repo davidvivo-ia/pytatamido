@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     moderngl = None
     np = None
 
-from .config import FLOOR_Y, H, RS, W, cam_base_off, mixc
+from .config import FLOOR_Y, H, LH, LW, RS, W, cam_base_off, mixc
 
 LUT_IDS = {"Natural": 0, "Caravaggio": 1, "Hammershøi": 2, "Kurosawa B/N": 3, "Daido Moriyama": 4}
 DALT_IDS = {"off": 0, "protanopia": 1, "deuteranopia": 2, "tritanopia": 3}
@@ -66,7 +66,11 @@ float luma(vec3 c) { return dot(c, vec3(.2126, .7152, .0722)); }
 """
 
 SCENE = COMMON + """
-uniform sampler2D tBg, tFig, tFx, tFigD;
+uniform sampler2D tBg, tFig, tFx, tFigD, tPlate, tPlateM, tPlate2;
+uniform float uPlateMix;      // fundido de la lámina anterior (cambio de asalto) a la actual
+uniform vec4 uWall;           // pared → pantalla: x0, y del borde superior, px por unidad, y del zócalo
+uniform vec4 uPlate;          // lámina: u mínima, v mínima, ancho y alto en unidades de pared
+uniform float uPlateOn;
 uniform vec2 uRes;
 uniform float uTime;
 uniform vec3 uKey3, uSky, uBounce;
@@ -237,8 +241,15 @@ vec3 shadeFloor(vec2 p, out float coc) {
     float dw = p.y - uFloorBackY;
     if (dw > 0.) {
         float dwr = dw / uRS;
-        vec4 wb = Lp(tBg, vec2(p.x, uFloorBackY - dw * 1.4) + rip, 1.5 + dwr * 0.025 + LB());
+        vec2 rp = vec2(p.x, uFloorBackY - dw * 1.4) + rip;
+        vec4 wb = Lp(tBg, rp, 1.5 + dwr * 0.025 + LB());
         vec3 wl = toLin(wb.rgb);
+        if (uPlateOn > 0.5) {               // reflejo de la lámina (textura desenfocada por la distancia)
+            vec2 w = vec2((rp.x - uWall.x) / uWall.z, (rp.y - uWall.y) / uWall.z);
+            vec3 pl = toLin(textureLod(tPlate, (w - uPlate.xy) / uPlate.zw, 2. + dwr * 0.03).rgb);
+            wl = mix(pl * (1. + uEmissive * smoothstep(0.3, 0.8, luma(pl))), wl, wb.a);
+            col += wl * refl * 0.7 * exp(-dwr * 0.011);
+        } else
         col += wl * (1. + uEmissive * smoothstep(0.3, 0.8, luma(wl))) * wb.a * refl * 0.7 * exp(-dwr * 0.011);
     }
     col += lspec * gloss * uLanI * (0.25 + uWet);
@@ -390,6 +401,37 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         h = wv * 0.25 * v + drape(q, seed, 1.1) * 0.8;
         ak = 1. + v * (0.05 * wv - 0.025);
     }
+    // ── segunda octava: el hilo. Sólo aparece cuando hay píxeles para verlo (1440p, 4K, Modo Foto) ──
+    float vf = vis(0.32, pxcm);
+    if (vf > 0.01) {
+        if (pat == 1 || pat == 3 || pat == 15 || pat == 6) {           // tafetán: urdimbre y trama que se cruzan
+            float over = mod(floor(q.x / 0.22) + floor(q.y / 0.22), 2.);
+            float th = mix(bump1(q.x / 0.22), bump1(q.y / 0.22), over);
+            h += (th - 0.5) * 0.12 * vf;
+            ak *= 1. + (th - 0.5) * 0.05 * vf;
+        } else if (pat == 2 || pat == 4) {                              // sarga y punto: costillas finas
+            float th = bump1((q.x * 0.6 + q.y) / 0.3);
+            h += (th - 0.5) * 0.1 * vf;
+            ak *= 1. + (th - 0.5) * 0.045 * vf;
+        } else if (pat == 8 || pat == 9 || pat == 5) {                  // satén y seda: flotes finos a lo largo
+            float th = vnoise(vec2(q.x * 1.2, q.y * 9.) + seed);
+            sk *= 1. + (th - 0.5) * 0.6 * vf;
+            h += (th - 0.5) * 0.04 * vf;
+        } else if (pat == 13) {                                         // piel: poros
+            float po = vnoise(q * 7.5 + seed);
+            h += (po - 0.5) * 0.05 * vis(0.14, pxcm);
+            sk *= 0.8 + 0.4 * po;
+        } else if (pat == 12) {                                         // pelo: hebras sueltas
+            float v3 = vis(0.16, pxcm);
+            float fs = 0.5 + 0.5 * sin(6.2831853 * (q.y + 0.3 * vnoise(vec2(q.x * 0.3, seed))) / 0.16);
+            h += (fs - 0.5) * 0.12 * v3;
+            ak *= 1. + (fs - 0.5) * 0.08 * v3;
+        } else if (pat == 10 || pat == 11) {                            // cuero y neopreno: grano
+            float gr = vnoise(q * 4.2 + seed);
+            h += (gr - 0.5) * 0.08 * vis(0.24, pxcm);
+            sk *= 0.85 + 0.3 * gr;
+        }
+    }
 }
 
 vec3 litFighter(vec2 p, vec4 fg) {
@@ -506,15 +548,72 @@ vec3 litFighter(vec2 p, vec4 fg) {
     return col * uTint;
 }
 
+
+// ── la pared del dojo: lámina horneada y proyectada con la cámara ────────────
+// La pared (techo, enlucido, madera, shōji, tokonoma, farolillos) se hornea una vez a alta resolución;
+// aquí se proyecta con la transformación de la cámara y se le pinta textura a resolución nativa:
+// washi con pulpa y fibras, veta de madera con anillos y tablas, enlucido de barro.
+vec3 shadeWall(vec2 p) {
+    vec2 w = vec2((p.x - uWall.x) / uWall.z, (p.y - uWall.y) / uWall.z);      // unidades de pared (≈ cm)
+    vec2 t = (w - uPlate.xy) / uPlate.zw;
+    vec3 c = toLin(texture(tPlate, t).rgb);
+    if (uPlateMix < 0.999) c = mix(toLin(texture(tPlate2, t).rgb), c, uPlateMix);
+    c *= uTint;
+    vec3 m = texture(tPlateM, t).rgb;
+    float fpx = uWall.z;
+    if (m.r > 0.01) {                                  // washi: nubes de pulpa y fibras largas de kōzo
+        float pulp = fbm(w * 0.32 + 3.1);
+        float fib = 0.;
+        for (int i = 0; i < 4; i++) {
+            float a = float(i) * 1.37 + 0.4;
+            vec2 q = mat2(cos(a), -sin(a), sin(a), cos(a)) * w;
+            float n = vnoise(vec2(q.x * 0.28, q.y * 5.5) + float(i) * 17.3);
+            fib += smoothstep(0.8, 0.96, n);
+        }
+        float paper = 0.88 + 0.2 * pulp + 0.07 * fib * vis(0.25, fpx);
+        c = mix(c, c * paper, m.r);
+    }
+    if (m.g > 0.01) {                                  // madera: veta larga, anillos y poros
+        float warp = fbm(vec2(w.x * 0.015, w.y * 0.12) + 7.);
+        float grain = fbm(vec2(w.x * 0.02, w.y * 0.55));
+        float rings = 0.5 + 0.5 * sin((w.y + warp * 38.) * 1.3);
+        float pores = vnoise(vec2(w.x * 0.08, w.y * 4.0));
+        float wv = 0.8 + 0.26 * grain + 0.08 * rings * vis(2.4, fpx) + 0.06 * (pores - 0.5) * vis(0.3, fpx);
+        c = mix(c, c * wv, m.g);
+    }
+    if (m.b > 0.01) {                                  // enlucido de barro: manchas y paja picada
+        float pl = 0.9 + 0.14 * fbm(w * 0.1 + 11.) + 0.05 * (vnoise(w * 1.6) - 0.5) * vis(0.6, fpx);
+        float straw = smoothstep(0.86, 0.97, vnoise(vec2(w.x * 0.9 + w.y * 0.4, w.y * 0.2) * 1.3));
+        c = mix(c, c * (pl - 0.06 * straw * vis(0.4, fpx)), m.b);
+    }
+    c *= 1. + uEmissive * smoothstep(0.3, 0.8, luma(c)) * 2.2 * (0.35 + 0.65 * m.r);      // papel a contraluz
+    // los farolillos iluminan la madera y el enlucido de alrededor
+    for (int i = 0; i < 4; i++) {
+        vec4 l = uLanterns[i];
+        if (l.w <= 0.) continue;
+        vec2 d = (p - l.xy) / uWall.z;
+        float att = l.w * 2600. / (dot(d, d) + 900.);
+        c += c * uLan * att * (1. - 0.7 * m.r) * 1.6;
+    }
+    return c;
+}
+
 void main() {
     vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
     vec4 bg = Lp(tBg, p);
     float coc = 1.;
     vec3 col = vec3(0.);
-    if (bg.a < 0.999) col = shadeFloor(p, coc);
-    vec3 b = toLin(bg.rgb) * uTint;
-    if (p.y < uFloorBackY) b *= 1. + uEmissive * smoothstep(0.3, 0.8, luma(b)) * 2.2;
-    col = mix(col, b, bg.a);
+    if (uPlateOn > 0.5) {
+        // pared horneada detrás; en tBg sólo queda lo que se mueve (público, hoja)
+        if (p.y < uFloorBackY) col = shadeWall(p);
+        else col = shadeFloor(p, coc);
+        col = mix(col, toLin(bg.rgb) * uTint, bg.a);
+    } else {
+        if (bg.a < 0.999) col = shadeFloor(p, coc);
+        vec3 b = toLin(bg.rgb) * uTint;
+        if (p.y < uFloorBackY) b *= 1. + uEmissive * smoothstep(0.3, 0.8, luma(b)) * 2.2;
+        col = mix(col, b, bg.a);
+    }
     coc = mix(coc, p.y < uFloorBackY ? 1. : 0.75, bg.a);
 
     vec4 fg = Lp(tFig, p);
@@ -542,12 +641,18 @@ void main() {
 """
 
 RAYS = COMMON + """
-uniform sampler2D tBg, tFig;
+uniform sampler2D tBg, tFig, tPlate;
 uniform vec2 uRes;
 uniform vec2 uLightUV;
-uniform float uFloorBackY, uDensity, uDecay, uTime;
+uniform float uFloorBackY, uDensity, uDecay, uTime, uPlateOn;
+uniform vec4 uWall, uPlate;
 float mask(vec2 q) {
     vec4 b = textureLod(tBg, q, 3.5 + LB());     // máscara desenfocada: sin moiré con la celosía
+    if (uPlateOn > 0.5) {
+        vec2 p = q * uRes;
+        vec2 w = vec2((p.x - uWall.x) / uWall.z, (p.y - uWall.y) / uWall.z);
+        b = vec4(textureLod(tPlate, (w - uPlate.xy) / uPlate.zw, 4.).rgb, 1.);
+    }
     float a = textureLod(tFig, q, 2.0 + LB()).a;
     float wall = step(q.y * uRes.y, uFloorBackY);
     return b.a * wall * smoothstep(0.5, 0.92, dot(b.rgb, vec3(.299, .587, .114))) * (1. - a);
@@ -807,6 +912,8 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
         refl=g["refl"], wet=g["wet"], rim=g["rim"], emissive=g["emissive"], sky_fill=g["sky_fill"],
         light_dir=g["light_dir"], shadow=g["shadow"] if cfg.get("shadows", True) else (0, 1, 0, 0),
         lanterns=lanterns, fighters=figs, decals=decals, waves=waves, tex=float(cfg.get("tex", 1.0)),
+        wall=dojo.wall_geom(cam), plate=getattr(dojo, "plate", None), plate_from=getattr(dojo, "plate_from", None),
+        plate_mix=float(getattr(dojo, "plate_mix", 1.0)),
         light_uv=g["light_uv"], rays_i=g["rays"] if cfg.get("beams", True) else 0.0, rays_col=g["rays_col"],
         exposure=g["exposure"], lift=g["lift"], gain=g["gain"], sat=g["sat"], power=g["power"],
         bloom=0.05 if cfg.get("bloom") else 0.02, ca=0.25 + (fx.ca if fx is not None else 0.0),
@@ -860,8 +967,10 @@ class GPURenderer:
         self.t_pieces = ctx.texture((256, 2), 4, dtype="f4")        # tabla de piezas: ancla, eje, material, tejido
         self.t_pieces.filter = (moderngl.NEAREST, moderngl.NEAREST)
         self._pieces = np.zeros((2, 256, 4), dtype="f4")
+        self.slots = [dict(ver=None, col=None, mat=None), dict(ver=None, col=None, mat=None)]   # lámina actual y anterior
+        self._dummy = tex((4, 4))
         self._figd_blank = None
-        self.t_hud = tex((W, H))
+        self.t_hud = tex((LW, LH))          # la interfaz, a resolución lógica: PRESENT la reescala
         self.t_scene = tex((W, H), dtype="f2")
         self.f_scene = ctx.framebuffer([self.t_scene])
         self.t_dof = tex((W, H), dtype="f2")
@@ -909,10 +1018,17 @@ class GPURenderer:
             return "?"
 
     # ----- utilidades -----
-    def _upload(self, tex, surf: pygame.Surface, mip=False):
+    def _upload(self, tex, surf: pygame.Surface, mip=False, rect=None):
         if self._swz is None:
             masks = surf.get_masks()
             self._swz = "BGRA" if masks[0] == 0xFF0000 else "RGBA"
+        if rect is not None and tex.swizzle == self._swz:
+            # sólo la zona que cambió: los mismos bytes que la vista completa, en el mismo orden de canales
+            sub = surf.subsurface(rect)
+            tex.write(pygame.image.tobytes(sub, self._swz), viewport=(rect.x, rect.y, rect.w, rect.h))
+            if mip:
+                tex.build_mipmaps()
+            return
         tex.swizzle = self._swz
         try:
             tex.write(surf.get_view("1"))
@@ -938,14 +1054,68 @@ class GPURenderer:
             self._set(prog, name, i)
         self._set(prog, "uRS", float(RS))
 
+    def _slot(self, plate, keep=None):
+        """Textura de una lámina de pared (color + máscara) con mipmaps y filtrado anisótropo. Hay dos
+        huecos (actual y anterior, para el fundido entre asaltos); sólo se sube lo que es nuevo."""
+        if plate is None:
+            return None
+        for sl in self.slots:
+            if sl["ver"] == plate["version"]:
+                return sl
+        keep_v = keep["version"] if keep is not None else None
+        sl = next((s_ for s_ in self.slots if s_["ver"] != keep_v), self.slots[0])
+        size = plate["col"].get_size()
+        for name, src in (("col", plate["col"]), ("mat", plate["mat"])):
+            t = sl[name]
+            if t is None or t.size != size:
+                if t is not None:
+                    t.release()
+                t = self.ctx.texture(size, 4, dtype="f1")
+                t.repeat_x = t.repeat_y = False
+                t.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+                try:
+                    t.anisotropy = 8.0
+                except Exception:
+                    pass
+                sl[name] = t
+            t.swizzle = "RGBA"
+            t.write(pygame.image.tobytes(src, "RGBA"))
+            t.build_mipmaps()
+        sl["ver"] = plate["version"]
+        return sl
+
+    def _wall_uniforms(self, pr, p, on):
+        S = self._set
+        S(pr, "uPlateOn", 1.0 if on else 0.0)
+        if on:
+            x0, wt, fb, bgz = p["wall"]
+            S(pr, "uWall", (float(x0), float(wt), float(bgz), float(fb)))
+            S(pr, "uPlate", tuple(float(v) for v in p["plate"]["rect"]))
+
     # ----- fotograma -----
     def render(self, p: dict, bg, fig, fx, hud, dt=1 / 60, window_size=None, figd=None):
         ctx = self.ctx
         self.t += dt
-        self._upload(self.t_bg, bg, mip=True)
-        self._upload(self.t_fig, fig, mip=True)
+        dirty = p.get("dirty", "full")
+        if dirty == "full" or dirty is None:
+            self._upload(self.t_bg, bg, mip=True)
+            self._upload(self.t_fig, fig, mip=True)
+        else:
+            if dirty.get("bg") is not None:
+                self._upload(self.t_bg, bg, mip=True, rect=dirty["bg"])
+            if dirty.get("fig") is not None:
+                self._upload(self.t_fig, fig, mip=True, rect=dirty["fig"])
+        plate, pfrom = p.get("plate"), p.get("plate_from")
+        cur = self._slot(plate, keep=pfrom)
+        old = self._slot(pfrom, keep=plate) if pfrom is not None and p.get("plate_mix", 1.0) < 0.999 else None
+        plate_on = cur is not None
+        self.t_plate, self.t_platem = (cur["col"], cur["mat"]) if cur else (None, None)
+        self.t_plate2 = old["col"] if old else self.t_plate
         if figd is not None:
-            self._upload(self.t_figd, figd, mip=True)
+            if dirty == "full" or dirty is None:
+                self._upload(self.t_figd, figd, mip=True)
+            elif dirty.get("fig") is not None:
+                self._upload(self.t_figd, figd, mip=True, rect=dirty["fig"])
             pcs = p.get("pieces") or []
             arr = self._pieces
             arr[:] = 0.0
@@ -960,7 +1130,11 @@ class GPURenderer:
 
         # 1) escena HDR
         pr = self.p_scene
-        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd, tPieces=self.t_pieces)
+        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd, tPieces=self.t_pieces,
+                   tPlate=self.t_plate if plate_on else self._dummy, tPlateM=self.t_platem if plate_on else self._dummy,
+                   tPlate2=self.t_plate2 if plate_on else self._dummy)
+        self._wall_uniforms(pr, p, plate_on)
+        S(pr, "uPlateMix", float(p.get("plate_mix", 1.0)) if plate_on and self.t_plate2 is not self.t_plate else 1.0)
         S(pr, "uRes", (float(W), float(H)))
         S(pr, "uTime", self.t)
         S(pr, "uFigLit", 1.0 if figd is not None else 0.0)
@@ -998,7 +1172,8 @@ class GPURenderer:
 
         # 3) rayos volumétricos (media resolución)
         pr = self.p_rays
-        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig)
+        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tPlate=self.t_plate if plate_on else self._dummy)
+        self._wall_uniforms(pr, p, plate_on)
         S(pr, "uRes", (float(W), float(H)))
         S(pr, "uLightUV", tuple(float(v) for v in p["light_uv"]))
         S(pr, "uFloorBackY", float(p["floor_back"]))

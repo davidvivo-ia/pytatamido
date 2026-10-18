@@ -37,7 +37,7 @@ sys.path.insert(0, ROOT)
 import pygame  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from tatamido.config import RS, W, H  # noqa: E402
+from tatamido.config import LH, LW, RS, W, H  # noqa: E402
 from tatamido.fighter import Fighter  # noqa: E402
 from tatamido.game import Game  # noqa: E402
 from tatamido.match import Match  # noqa: E402
@@ -208,7 +208,8 @@ def lineup(rnd, name):
     cam = Camera()
     cam.zoom = 1.0
     mk = lambda: pygame.Surface((W, H), pygame.SRCALPHA)
-    bg, fig, figd, fx, hud = mk(), mk(), mk(), mk(), mk()
+    bg, fig, figd, fx = mk(), mk(), mk(), mk()
+    hud = pygame.Surface((LW, LH), pygame.SRCALPHA)          # la interfaz va a resolución lógica
     dojo.draw(bg, cam, G.fonts, gpu=True)
     pieces = []
     for row, idxs in ((0, list(range(0, 12, 2))), (1, list(range(1, 12, 2)))):

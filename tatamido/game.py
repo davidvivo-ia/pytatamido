@@ -10,6 +10,9 @@ import pygame
 from .audio import Audio
 from .camera import Camera
 from .config import *
+
+RW, RH = W, H        # resolución de render (capas del mundo, ventana)
+W, H = LW, LH        # la interfaz se diseña en 1280×720 lógicos y la GPU la reescala
 from .data import FIGHTERS, FIGHTER_BY_ID, EPILOGUE_FOOTER
 from .dojo import Dojo
 from .fighter import Fighter
@@ -44,16 +47,17 @@ class Game:
         self.renderer_pref = args.get("renderer") or self.save.get("renderer", "auto")
         self.screen = self._open_display(args)
         pygame.display.set_caption(TITLE + ("  ·  GPU" if self.gpu else "  ·  CPU"))
-        self.bg = pygame.Surface((W, H), pygame.SRCALPHA)
-        self.fig = pygame.Surface((W, H), pygame.SRCALPHA)
-        self.figd = pygame.Surface((W, H), pygame.SRCALPHA)   # altura y material de los luchadores (GPU)
-        self.hud = pygame.Surface((W, H), pygame.SRCALPHA)
+        self.bg = pygame.Surface((RW, RH), pygame.SRCALPHA)
+        self.fig = pygame.Surface((RW, RH), pygame.SRCALPHA)
+        self.figd = pygame.Surface((RW, RH), pygame.SRCALPHA)   # altura y material de los luchadores (GPU)
+        self.hud = pygame.Surface((W, H), pygame.SRCALPHA)       # interfaz a resolución lógica
         self._bd_params = None
+        self._dirty = {"prev": None}      # zonas pintadas en el fotograma anterior (subidas parciales a la GPU)
         self.audio = Audio(self.save.get("volume", 0.8))
         self.fonts = Fonts()
         self.clock = pygame.time.Clock()
-        self.layer = pygame.Surface((W, H), pygame.SRCALPHA)
-        self.world = pygame.Surface((W, H))
+        self.layer = pygame.Surface((RW, RH), pygame.SRCALPHA)
+        self.world = pygame.Surface((RW, RH))
         self.joys = []
         try:
             pygame.joystick.init()
@@ -110,7 +114,7 @@ class Game:
         if self.renderer_pref != "cpu" and GPURenderer.available():
             try:
                 if headless:
-                    screen = pygame.display.set_mode((W, H))
+                    screen = pygame.display.set_mode((W, H))      # ventana ficticia: se lee el framebuffer
                     self.gpu = GPURenderer.offscreen_context()
                 else:
                     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
@@ -119,20 +123,36 @@ class Game:
                     if sys.platform == "darwin":
                         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_FORWARD_COMPATIBLE_FLAG, True)
                     flags = pygame.OPENGL | pygame.DOUBLEBUF | (0 if windowed else pygame.FULLSCREEN)
+                    size = self._window_size(windowed)
                     try:
-                        screen = pygame.display.set_mode((W, H), flags, vsync=1)
+                        screen = pygame.display.set_mode(size, flags, vsync=1)
                     except Exception:
-                        screen = pygame.display.set_mode((W, H), flags)
+                        screen = pygame.display.set_mode(size, flags)
                     self.gpu = GPURenderer.for_window()
                 return screen
             except Exception as e:
                 print(f"[TATAMI: DŌ] Renderer GPU no disponible ({e}). Se usa el renderer CPU.")
                 self.gpu = None
+                if RS != 1.0:          # el renderer CPU sólo existe a 720p: se relanza el juego a esa escala
+                    os.environ["TATAMIDO_RS"] = "1"
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
         flags = 0 if headless else (pygame.SCALED | (0 if windowed else pygame.FULLSCREEN))
         try:
             return pygame.display.set_mode((W, H), flags, vsync=1)
         except Exception:
             return pygame.display.set_mode((W, H))
+
+    @staticmethod
+    def _window_size(windowed):
+        """Ventana de la resolución de render, sin pasarse del 90 % del escritorio (16:9)."""
+        if not windowed:
+            return (0, 0)
+        try:
+            dw, dh = pygame.display.get_desktop_sizes()[0]
+        except Exception:
+            return (RW, RH)
+        s = min(1.0, dw * 0.9 / RW, dh * 0.9 / RH)
+        return (int(RW * s), int(RH * s))
 
     def adapt_quality(self, ms: float):
         """Escalador dinámico: si la CPU se pasa del presupuesto de 60 fps, baja la densidad de
@@ -374,7 +394,7 @@ class Game:
             self.scene_t = 0
 
     # ----- opciones -----
-    OPTS = ["Preset gráfico", "Renderer", "Dificultad IA", "Volumen", "Controles", "Reducir destellos", "Temblor de cámara", "Alto contraste", "Filtro daltonismo", "Volver"]
+    OPTS = ["Preset gráfico", "Renderer", "Resolución", "Dificultad IA", "Volumen", "Controles", "Reducir destellos", "Temblor de cámara", "Alto contraste", "Filtro daltonismo", "Volver"]
 
     def options_key(self, k):
         n = len(self.OPTS)
@@ -394,6 +414,10 @@ class Game:
             elif o == "Renderer":
                 opts = ["auto", "gpu", "cpu"]
                 self.save["renderer"] = opts[(opts.index(self.save.get("renderer", "auto")) + d) % 3]
+            elif o == "Resolución":
+                opts = ["auto"] + list(RESOLUTIONS)
+                cur = self.save.get("res", "auto")
+                self.save["res"] = opts[(opts.index(cur if cur in opts else "auto") + d) % len(opts)]
             elif o == "Dificultad IA":
                 self.save["difficulty"] = (self.save.get("difficulty", 1) + d) % len(DIFFICULTIES)
             elif o == "Volumen":
@@ -501,7 +525,8 @@ class Game:
         os.makedirs("fotos", exist_ok=True)
         name = os.path.join("fotos", f"tatami_{int(time.time())}.png")
         src = self.gpu.read(False) if self.gpu is not None else self.world   # en GPU: imagen limpia, sin interfaz
-        big = pygame.transform.smoothscale(src, (W * 2, H * 2))
+        f = 2 if RW <= 1280 else 1          # a 720p se guarda a doble tamaño; a 1440p o 4K, nativa
+        big = pygame.transform.smoothscale(src, (RW * f, RH * f))
         pygame.image.save(big, name)
         self.photo["saved_msg"] = 120
         self.audio.play("ui_ok")
@@ -621,7 +646,8 @@ class Game:
                 if keys[pygame.K_DOWN]: ph["yoff"] -= 4
                 m.cam.x, m.cam.zoom = ph["x"], ph["zoom"]
                 m.cam.yoff = ph["yoff"]
-                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, photo=ph, figd=self.figd)
+                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, photo=ph, figd=self.figd, dirty=self._dirty)
+                self._dirty = {"prev": self._dirty["new"]}
                 p.update(lut=ph["lut"], exposure=p["exposure"] + ph["exposure"] * 0.35, dof=9.0 if ph["dof"] else 0.0,
                          grain=0.045 if ph["grain"] else 0.0, tilt=0.0)
                 if not ph["vignette"]:
@@ -633,7 +659,8 @@ class Game:
                 m.cam.override = None
                 m.cam.yoff = 0
             else:
-                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, figd=self.figd)
+                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, figd=self.figd, dirty=self._dirty)
+                self._dirty = {"prev": self._dirty["new"]}
                 m.draw_hud(hud, self.fonts)
                 m.fx.draw_screen(hud, self.fonts, reduce_flash=acc.get("flashes", False))
                 if m.state == Match.REPLAY:
@@ -740,6 +767,7 @@ class Game:
             # el dojo va a las capas de la GPU; el texto de la escena se dibuja después sobre el HUD
             for s in (self.bg, self.fig, self.layer):
                 s.fill((0, 0, 0, 0))
+            self._dirty = {"prev": None}            # las capas se han reutilizado: el combate empieza en limpio
             self.title_dojo.draw(self.bg, cam, self.fonts, gpu=True)
             self.title_dojo.draw_beams(None, cam, self.layer, intensity_override=0)
             self._bd_params = scene_params(self.title_dojo, cam, [], None, self.cfg,
@@ -875,7 +903,8 @@ class Game:
         self.draw_backdrop(surf, 170)
         self.text(surf, "OPCIONES", 54, 100, 60, (248, 236, 215), serif=True)
         acc = self.access()
-        vals = {"Preset gráfico": self.preset, "Renderer": self.save.get("renderer", "auto") + " (al reiniciar)", "Dificultad IA": DIFFICULTIES[self.save.get("difficulty", 1)][0], "Volumen": f"{int(self.audio.volume * 100)} %",
+        vals = {"Preset gráfico": self.preset, "Renderer": self.save.get("renderer", "auto") + " (al reiniciar)",
+                "Resolución": f"{self.save.get('res', 'auto')} · ahora {RW}×{RH} (al reiniciar)", "Dificultad IA": DIFFICULTIES[self.save.get("difficulty", 1)][0], "Volumen": f"{int(self.audio.volume * 100)} %",
                 "Controles": self.save.get("controls", "moderno"), "Reducir destellos": "sí" if acc.get("flashes") else "no",
                 "Temblor de cámara": "sí" if acc.get("shake", True) else "no", "Alto contraste": "sí" if acc.get("contrast") else "no",
                 "Filtro daltonismo": acc.get("daltonism", "off"), "Volver": ""}
