@@ -20,6 +20,9 @@ class Effects:
         self.flash = 0.0
         self.flash_color = (255, 255, 255)
         self.sparks: List[list] = []
+        self.waves: List[list] = []       # ondas de choque para la GPU: [x, y, t, t_max, fuerza]
+        self.ca = 0.0                     # aberración cromática extra tras un golpe fuerte
+        self.impact = 0                   # frames de impacto (negativo estilo anime)
 
     def mul(self):
         return self.cfg.get("particles", 1.0)
@@ -44,6 +47,10 @@ class Effects:
 
     def ring(self, x, y, max_r=120, color=(255, 255, 255)):
         self.rings.append([x, y, 6, max_r, 0, color])
+        if max_r >= 120:
+            self.waves.append([x, y, 0.0, 16.0, min(1.0, max_r / 220.0)])
+            self.waves = self.waves[-4:]
+            self.ca = min(2.5, self.ca + max_r / 120.0)
 
     def salt(self, x, y):
         for _ in range(int(60 * self.mul())):
@@ -117,6 +124,12 @@ class Effects:
             p["life"] += tscale
         self.popups = [p for p in self.popups if p["life"] < p["max"]]
         self.flash = max(0.0, self.flash - 0.07 * tscale)
+        for wv in self.waves:
+            wv[2] += tscale
+        self.waves = [wv for wv in self.waves if wv[2] < wv[3]]
+        self.ca *= 0.9
+        if self.impact > 0:
+            self.impact -= 1
 
     def draw_world(self, surf, cam: Camera, layer):
         """Dibuja partículas en coordenadas del mundo sobre la capa alpha `layer`."""

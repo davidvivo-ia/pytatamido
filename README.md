@@ -6,6 +6,36 @@ Juego de lucha 2.5D, uno contra uno, en Python puro con pygame. Todo es procedim
 no hay ficheros de arte ni de audio. El dojo Kōyō-kan, los doce luchadores, la tinta sumi-e,
 el taiko y el shakuhachi se generan en el arranque.
 
+![Tarde dorada](docs/01_tarde_dorada.jpg)
+
+| | |
+|---|---|
+| ![Noche de farolillos](docs/02_noche.jpg) | ![Desempate bajo la lluvia](docs/03_lluvia.jpg) |
+| ![Kiai Final](docs/04_kiai_final.jpg) | ![Modo Foto Caravaggio](docs/05_modo_foto_caravaggio.jpg) |
+
+## Renderer 2026: shaders en la GPU
+
+Si hay OpenGL 3.3 y `moderngl`, el juego usa un pipeline de shaders propio; si no, cae solo al
+renderer de pygame. pygame dibuja las capas (fondo, luchadores, efectos, HUD) y la GPU hace la luz:
+
+- **Suelo procedural por píxel:** tatami de igusa con heri de algodón índigo, juntas, desgaste
+  central y brillo distinto en cada estera; zona roja de seguridad; tarima de cedro con veta.
+- **Luz de los shōji:** franjas de sol que cruzan el tatami con la sombra de la celosía (kumiko),
+  penumbra que crece con la distancia y rayos volumétricos en pantalla que los cuerpos cortan.
+- **Sombras proyectadas** de los luchadores y oclusión de contacto bajo los pies.
+- **Farolillos** como luces puntuales sobre el suelo, con su reflejo alargado en el barniz.
+- **Reflejos** de luchadores y pared en el suelo; en el desempate, suelo mojado con ondas de lluvia.
+- **Rim light y sombra de forma** en los cuerpos según la dirección de la luz de cada asalto.
+- **HDR:** bloom de doble filtro, tonemapping AgX, gradación por asalto, aberración cromática,
+  ondas de choque en los golpes fuertes, foco cenital y frame de impacto en el Kiai, viñeta,
+  grano de película, profundidad de campo por CoC (Kiai, Modo Foto, menús), LUTs y FXAA.
+
+```bash
+python Tatamydo.py --renderer gpu    # auto (por defecto) | gpu | cpu
+```
+
+## Código
+
 `Tatamydo.py` es el lanzador; el juego vive en el paquete `tatamido/`:
 
 | Módulo | Qué hace |
@@ -14,15 +44,16 @@ el taiko y el shakuhachi se generan en el arranque.
 | `inputs.py` · `moves.py` | Teclado/mando con buffer de 7 frames, comandos clásicos, frame data por luchador |
 | `fighter.py` | Máquina de estados, cancelaciones en golpe, Kiai Final, IA con personalidad |
 | `poses.py` · `render_fighter.py` | Esqueleto procedimental, ropa, luz lateral, contornos, estelas |
-| `dojo.py` · `fx.py` · `postfx.py` | Kōyō-kan, haces, polvo, lluvia, tinta sumi-e, grano, LUTs, bloom |
+| `gpu.py` | Renderer de shaders: suelo procedural, sombras, rayos, reflejos, HDR, AgX, DoF, FXAA |
+| `dojo.py` · `fx.py` · `postfx.py` | Kōyō-kan, polvo, lluvia, tinta sumi-e; posprocesado del renderer CPU |
 | `match.py` · `replay.py` | Triángulo, puntuación, fase de suelo, repetición de ippon, grabación determinista |
 | `game.py` | Escenas, menús, modos, Modo Foto, opciones y accesibilidad |
-| `tests/` | `pytest`: determinismo, triángulo, parada perfecta, jogai, buffer/cancel, repeticiones |
+| `tests/` | `pytest`: determinismo, triángulo, técnicas únicas, contra, escapes, guardia rota, entrenamiento, repeticiones y todas las escenas con ambos renderers |
 
 ## Ejecutar
 
 ```bash
-pip install pygame-ce numpy          # numpy es opcional: sin él, el juego es mudo
+pip install pygame-ce numpy moderngl # moderngl activa los shaders; numpy, el sonido
 python Tatamydo.py                   # ventana 1280×720 (F11: pantalla completa)
 python Tatamydo.py --preset cine     # portatil | bajo | medio | alto | ultra | cine
 python Tatamydo.py --photo-mode      # arranca directo en el Modo Foto
@@ -40,14 +71,25 @@ python -m pytest -q                  # tests de simulación
 | Agarre | `J` | `Num 1` | A |
 | Bloqueo (parada perfecta: 4 frames) | `K` | `Num 2` | B |
 | Kiai Final (con la barra llena) | `L` | `Num 3` | RT |
-| Técnica de estilo | Atrás + Medio (moderno) · ↓↘→ + Medio (clásico) | | |
+| Técnica de estilo (única por luchador) | Atrás + Medio (moderno) · ↓↘→ + Medio (clásico) | | |
 | Barrido / golpe aéreo | Agachado + Fuerte · Salto + golpe | | |
-| Modo Foto · pausa · hitboxes · frames | `F12` · `Esc` · `F1` · `F2` | | |
+| Modo Foto · pausa (lista de técnicas) · hitboxes · frames | `F12` · `Esc` · `F1` · `F2` | | |
+| Entrenamiento: muñeco · grabar · reproducir | `F3` · `F4` · `F5` | | |
 
 ## Qué hay dentro
 
 - **Triángulo** golpe → agarre → bloqueo → golpe, parada perfecta con congelado de 8 frames,
   aliento (agotado: jadeo y −40 % de daño), barra de Kiai, hitstop, zoom de impacto y cámara lenta.
+- **Técnica única por luchador:** Uchi Mata (agarre de comando), Ushiro Mawashi con armadura,
+  Abrazo del oso que lleva al suelo, Aú Batido que se bloquea sólo de pie, Tsuppari multigolpe,
+  Lin Wan Kuen en cadena, Puxada de guarda invulnerable, Teep de empuje, Dwi Chagi, Single Leg a la
+  carrera, Uppercut anti-aéreo y el Irimi de Okabe, una guardia que devuelve el golpe proyectando.
+- **Capa competitiva:** contraataque (+25 % al golpear en el arranque rival), escape de agarre
+  pulsando agarre al ser agarrado (los de comando no se escapan), rotura de guardia al quedarse
+  sin aliento bloqueando, armadura, golpes altos y bajos, invulnerabilidad.
+- **Entrenamiento de verdad:** ventaja de frames tras cada golpe o bloqueo, cinco modos de muñeco
+  (IA, quieto, bloquea todo, bloqueo aleatorio, salta) y grabación y reproducción en bucle de lo
+  que hace el muñeco. La pausa incluye la lista de técnicas con datos de frames y propiedades.
 - **Sensación de juego:** buffer de entrada de 7 frames (la pulsación en la recuperación no se
   pierde), cancelaciones en golpe (ligero → medio/fuerte/agarre, medio → fuerte/especial),
   escalado de daño por combo con contador en pantalla, estelas en los golpes fuertes.

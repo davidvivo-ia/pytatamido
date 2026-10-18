@@ -15,7 +15,7 @@ def test_moveset_sanity():
         ms = build_moveset(fd)
         for k, m in ms.items():
             assert m.startup > 0 and m.active > 0 and m.recovery > 0, (fd["id"], k)
-            assert m.damage > 0 and m.rng > 0
+            assert (m.damage > 0 and m.rng > 0) or m.counter
         assert ms["heavy"].damage > ms["medium"].damage > ms["light"].damage
         assert ms["light"].startup <= ms["medium"].startup <= ms["heavy"].startup
 

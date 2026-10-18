@@ -1,6 +1,7 @@
 import math
 import os
 import random
+import sys
 import time
 from typing import List, Optional
 
@@ -13,6 +14,7 @@ from .data import FIGHTERS, FIGHTER_BY_ID, EPILOGUE_FOOTER
 from .dojo import Dojo
 from .fighter import Fighter
 from .fx import Fonts, draw_kanji_do
+from .gpu import GPURenderer, scene_params
 from .inputs import KEYMAP_P1, KEYMAP_P2, PlayerInput
 from .match import Match
 from .postfx import apply_lut, bloom
@@ -37,12 +39,15 @@ class Game:
             preset = "alto"
         self.preset = preset
         self.cfg = dict(PRESETS[preset])
-        flags = pygame.SCALED | (0 if args.get("windowed") else pygame.FULLSCREEN) if not args.get("headless") else 0
-        try:
-            self.screen = pygame.display.set_mode((W, H), flags, vsync=1)
-        except Exception:
-            self.screen = pygame.display.set_mode((W, H))
-        pygame.display.set_caption(TITLE)
+        self.headless = args.get("headless", False)
+        self.gpu: Optional[GPURenderer] = None
+        self.renderer_pref = args.get("renderer") or self.save.get("renderer", "auto")
+        self.screen = self._open_display(args)
+        pygame.display.set_caption(TITLE + ("  ·  GPU" if self.gpu else "  ·  CPU"))
+        self.bg = pygame.Surface((W, H), pygame.SRCALPHA)
+        self.fig = pygame.Surface((W, H), pygame.SRCALPHA)
+        self.hud = pygame.Surface((W, H), pygame.SRCALPHA)
+        self._bd_params = None
         self.audio = Audio(self.save.get("volume", 0.8))
         self.fonts = Fonts()
         self.clock = pygame.time.Clock()
@@ -77,6 +82,8 @@ class Game:
         self.tourney: List[str] = []
         self.results_t = 0
         self.replay_files: List[str] = []
+        self.movelist = False
+        self.movelist_p = 0
         self.replay_i = 0
         self.title_dojo = Dojo(self.cfg)
         self.title_cam = Camera()
@@ -94,6 +101,43 @@ class Game:
         if self.ai_vs_ai:
             self.setup_match("spectate", random.choice(FIGHTERS)["id"], random.choice(FIGHTERS)["id"])
             self.scene = "fight"
+
+    def _open_display(self, args):
+        """Intenta abrir una ventana OpenGL 3.3 con el renderer de shaders; si falla, vuelve a pygame puro."""
+        headless = args.get("headless", False)
+        windowed = args.get("windowed", True)
+        if self.renderer_pref != "cpu" and GPURenderer.available():
+            try:
+                if headless:
+                    screen = pygame.display.set_mode((W, H))
+                    self.gpu = GPURenderer.offscreen_context()
+                else:
+                    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
+                    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
+                    pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
+                    if sys.platform == "darwin":
+                        pygame.display.gl_set_attribute(pygame.GL_CONTEXT_FORWARD_COMPATIBLE_FLAG, True)
+                    flags = pygame.OPENGL | pygame.DOUBLEBUF | (0 if windowed else pygame.FULLSCREEN)
+                    try:
+                        screen = pygame.display.set_mode((W, H), flags, vsync=1)
+                    except Exception:
+                        screen = pygame.display.set_mode((W, H), flags)
+                    self.gpu = GPURenderer.for_window()
+                return screen
+            except Exception as e:
+                print(f"[TATAMI: DŌ] Renderer GPU no disponible ({e}). Se usa el renderer CPU.")
+                self.gpu = None
+        flags = 0 if headless else (pygame.SCALED | (0 if windowed else pygame.FULLSCREEN))
+        try:
+            return pygame.display.set_mode((W, H), flags, vsync=1)
+        except Exception:
+            return pygame.display.set_mode((W, H))
+
+    def capture(self) -> pygame.Surface:
+        """Fotograma actual tal y como lo ve el jugador."""
+        if self.gpu is not None:
+            return self.gpu.read(True)
+        return self.world.copy()
 
     # ----- utilidades -----
     def access(self):
@@ -167,7 +211,10 @@ class Game:
         k = e.key
         sc = self.scene
         if k == pygame.K_F11:
-            pygame.display.toggle_fullscreen()
+            try:
+                pygame.display.toggle_fullscreen()
+            except Exception:
+                pass
             return
         if k == pygame.K_F12 and self.match is not None and sc == "fight":
             if self.photo is None:
@@ -314,7 +361,7 @@ class Game:
             self.scene_t = 0
 
     # ----- opciones -----
-    OPTS = ["Preset gráfico", "Dificultad IA", "Volumen", "Controles", "Reducir destellos", "Temblor de cámara", "Alto contraste", "Filtro daltonismo", "Volver"]
+    OPTS = ["Preset gráfico", "Renderer", "Dificultad IA", "Volumen", "Controles", "Reducir destellos", "Temblor de cámara", "Alto contraste", "Filtro daltonismo", "Volver"]
 
     def options_key(self, k):
         n = len(self.OPTS)
@@ -331,6 +378,9 @@ class Game:
                 self.preset = PRESET_ORDER[i]
                 self.cfg.clear(); self.cfg.update(PRESETS[self.preset])
                 self.title_dojo = Dojo(self.cfg)
+            elif o == "Renderer":
+                opts = ["auto", "gpu", "cpu"]
+                self.save["renderer"] = opts[(opts.index(self.save.get("renderer", "auto")) + d) % 3]
             elif o == "Dificultad IA":
                 self.save["difficulty"] = (self.save.get("difficulty", 1) + d) % len(DIFFICULTIES)
             elif o == "Volumen":
@@ -358,14 +408,21 @@ class Game:
     # ----- combate -----
     def fight_key(self, k):
         m = self.match
-        if k == pygame.K_ESCAPE or k == pygame.K_RETURN and self.paused:
-            if k == pygame.K_ESCAPE:
-                self.paused = not self.paused
-                self.pause_i = 0
+        if self.paused and self.movelist:
+            if k in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_u, pygame.K_j, pygame.K_SPACE):
+                self.movelist = False
                 self.audio.play("ui_back")
-                return
+            elif k in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_a, pygame.K_d):
+                self.movelist_p = 1 - self.movelist_p
+                self.audio.play("ui_move")
+            return
+        if k == pygame.K_ESCAPE:
+            self.paused = not self.paused
+            self.pause_i = 0
+            self.audio.play("ui_back")
+            return
         if self.paused:
-            items = 3
+            items = 4
             if k in (pygame.K_DOWN, pygame.K_s):
                 self.pause_i = (self.pause_i + 1) % items; self.audio.play("ui_move")
             elif k in (pygame.K_UP, pygame.K_w):
@@ -375,6 +432,9 @@ class Game:
                 if self.pause_i == 0:
                     self.paused = False
                 elif self.pause_i == 1:
+                    self.movelist = True
+                    self.movelist_p = 0
+                elif self.pause_i == 2:
                     self.setup_match(self.mode, m.f[0].fd["id"], m.f[1].fd["id"])
                 else:
                     self.paused = False
@@ -385,6 +445,12 @@ class Game:
             m.debug = not m.debug
         elif k == pygame.K_F2:
             m.frame_data_overlay = not m.frame_data_overlay
+        elif m.training and k == pygame.K_F3:
+            m.cycle_dummy()
+        elif m.training and k == pygame.K_F4:
+            m.toggle_record()
+        elif m.training and k == pygame.K_F5:
+            m.toggle_playback()
         elif m.state == Match.MATCH_END and k in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_u, pygame.K_j):
             self.go_results()
 
@@ -421,7 +487,8 @@ class Game:
     def save_photo(self):
         os.makedirs("fotos", exist_ok=True)
         name = os.path.join("fotos", f"tatami_{int(time.time())}.png")
-        big = pygame.transform.smoothscale(self.world, (W * 2, H * 2))  # supermuestreo 2x
+        src = self.gpu.read(False) if self.gpu is not None else self.world   # en GPU: imagen limpia, sin interfaz
+        big = pygame.transform.smoothscale(src, (W * 2, H * 2))
         pygame.image.save(big, name)
         self.photo["saved_msg"] = 120
         self.audio.play("ui_ok")
@@ -522,7 +589,67 @@ class Game:
                 self.go_results()
 
     # ----- dibujo -----
+    def draw_gpu(self):
+        sc = self.scene
+        acc = self.access()
+        hud = self.hud
+        hud.fill((0, 0, 0, 0))
+        self._bd_params = None
+        p = None
+        if sc == "fight" and self.match is not None:
+            m = self.match
+            ph = self.photo
+            if ph is not None:
+                m.cam.override = (ph["x"], ph["zoom"])
+                keys = pygame.key.get_pressed()
+                if keys[pygame.K_LEFT]: ph["x"] -= 6 / ph["zoom"]
+                if keys[pygame.K_RIGHT]: ph["x"] += 6 / ph["zoom"]
+                if keys[pygame.K_UP]: ph["yoff"] += 4
+                if keys[pygame.K_DOWN]: ph["yoff"] -= 4
+                m.cam.x, m.cam.zoom = ph["x"], ph["zoom"]
+                m.cam.yoff = ph["yoff"]
+                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, photo=ph)
+                p.update(lut=ph["lut"], exposure=p["exposure"] + ph["exposure"] * 0.35, dof=9.0 if ph["dof"] else 0.0,
+                         grain=0.045 if ph["grain"] else 0.0, tilt=0.0)
+                if not ph["vignette"]:
+                    p["vig"] = 0.0
+                if ph["hud"]:
+                    m.draw_hud(hud, self.fonts)
+                self.draw_photo_ui(hud)
+                m.cam.override = None
+                m.cam.yoff = 0
+            else:
+                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts)
+                m.draw_hud(hud, self.fonts)
+                m.fx.draw_screen(hud, self.fonts, reduce_flash=acc.get("flashes", False))
+                if m.state == Match.REPLAY:
+                    self.draw_replay_frame(hud)
+                    p["dof"] = 3.0
+                if m.replay is not None and m.state != Match.REPLAY:
+                    self.text(hud, "REPETICIÓN", 20, W - 190, H - 30, (255, 120, 100))
+                if m.state == Match.MATCH_END and m.state_t > 60:
+                    self.draw_match_end(hud)
+                    p["dof"] = max(p["dof"], 4.0)
+                if self.paused:
+                    self.draw_pause(hud)
+                    p["dof"] = 6.0
+        else:
+            {"title": self.draw_title, "menu": self.draw_menu, "select": self.draw_select, "options": self.draw_options,
+             "replays": self.draw_replays, "vs": self.draw_vs, "results": self.draw_results,
+             "epilogue": self.draw_epilogue}.get(sc, self.draw_title)(hud)
+            p = self._bd_params
+        if p is None:
+            self.draw_backdrop(hud, 120)
+            p = self._bd_params
+        p["contrast"] = acc.get("contrast", False)
+        p["daltonism"] = acc.get("daltonism", "off")
+        ws = None if self.headless else pygame.display.get_window_size()
+        self.gpu.render(p, self.bg, self.fig, self.layer, hud, window_size=ws)
+
     def draw(self):
+        if self.gpu is not None:
+            self.draw_gpu()
+            return
         sc = self.scene
         surf = self.world
         acc = self.access()
@@ -568,7 +695,7 @@ class Game:
                 if m.state == Match.REPLAY:
                     self.draw_replay_frame(surf)
                 if m.replay is not None and m.state != Match.REPLAY:
-                    self.text(surf, "● REPETICIÓN", 20, W - 190, H - 30, (255, 120, 100))
+                    self.text(surf, "REPETICIÓN", 20, W - 190, H - 30, (255, 120, 100))
                 if m.state == Match.MATCH_END and m.state_t > 60:
                     self.draw_match_end(surf)
                 if self.paused:
@@ -594,6 +721,15 @@ class Game:
     def draw_backdrop(self, surf, darken=140):
         cam = self.title_cam
         cam.x = math.sin(self.frame * 0.002) * 120
+        if self.gpu is not None:
+            # el dojo va a las capas de la GPU; el texto de la escena se dibuja después sobre el HUD
+            for s in (self.bg, self.fig, self.layer):
+                s.fill((0, 0, 0, 0))
+            self.title_dojo.draw(self.bg, cam, self.fonts, gpu=True)
+            self.title_dojo.draw_beams(None, cam, self.layer, intensity_override=0)
+            self._bd_params = scene_params(self.title_dojo, cam, [], None, self.cfg,
+                                           dict(dim=darken / 255 * 0.75, dof=6.0 if darken >= 140 else 3.0, tilt=0.0))
+            return
         self.title_dojo.draw(surf, cam, self.fonts)
         self.layer.fill((0, 0, 0, 0))
         self.title_dojo.draw_beams(surf, cam, self.layer)
@@ -714,7 +850,7 @@ class Game:
         self.draw_backdrop(surf, 170)
         self.text(surf, "OPCIONES", 54, 100, 60, (248, 236, 215), serif=True)
         acc = self.access()
-        vals = {"Preset gráfico": self.preset, "Dificultad IA": DIFFICULTIES[self.save.get("difficulty", 1)][0], "Volumen": f"{int(self.audio.volume * 100)} %",
+        vals = {"Preset gráfico": self.preset, "Renderer": self.save.get("renderer", "auto") + " (al reiniciar)", "Dificultad IA": DIFFICULTIES[self.save.get("difficulty", 1)][0], "Volumen": f"{int(self.audio.volume * 100)} %",
                 "Controles": self.save.get("controls", "moderno"), "Reducir destellos": "sí" if acc.get("flashes") else "no",
                 "Temblor de cámara": "sí" if acc.get("shake", True) else "no", "Alto contraste": "sí" if acc.get("contrast") else "no",
                 "Filtro daltonismo": acc.get("daltonism", "off"), "Volver": ""}
@@ -722,7 +858,7 @@ class Game:
         for i, o in enumerate(self.OPTS):
             sel = i == self.options_i
             self.text(surf, o, 32, 120, y, (255, 240, 215) if sel else (190, 180, 165), serif=sel)
-            self.text(surf, f"◂ {vals[o]} ▸" if vals[o] else "", 28, 520, y + 2, (255, 225, 180) if sel else (170, 160, 150))
+            self.text(surf, f"<  {vals[o]}  >" if vals[o] else "", 28, 520, y + 2, (255, 225, 180) if sel else (170, 160, 150))
             y += 50
         p = PRESETS[self.preset]
         info = [f"Partículas ×{p['particles']}", f"Haces volumétricos: {'sí' if p['beams'] else 'no'}", f"Grano 35 mm: {'sí' if p['grain'] else 'no'}",
@@ -730,8 +866,9 @@ class Game:
         yy = 160
         for ln in info:
             self.text(surf, ln, 20, 820, yy, (200, 190, 175)); yy += 26
-        self.text(surf, "Moderno: Atrás+Medio = técnica de estilo.  Clásico: ↓↘→+Medio, doble toque = dash.", 18, 100, H - 70, (190, 180, 165))
-        self.text(surf, "Los sonidos son sintetizados; sin numpy el juego es mudo.", 18, 100, H - 44, (170, 160, 150))
+        self.text(surf, "Moderno: Atrás+Medio = técnica de estilo.  Clásico: abajo, diagonal, adelante + Medio; doble toque = carrera.", 18, 100, H - 70, (190, 180, 165))
+        active = f"GPU · {self.gpu.renderer_name}" if self.gpu is not None else "CPU (pygame)"
+        self.text(surf, f"Renderer activo: {active}. Los sonidos son sintetizados; sin numpy el juego es mudo.", 18, 100, H - 44, (170, 160, 150))
 
     def draw_replays(self, surf):
         self.draw_backdrop(surf, 170)
@@ -794,13 +931,68 @@ class Game:
             self.text(surf, "Intro para continuar", 20, W // 2, H - 100, (200, 190, 175), center=True)
 
     def draw_pause(self, surf):
-        d = pygame.Surface((W, H), pygame.SRCALPHA); d.fill((0, 0, 0, 160)); surf.blit(d, (0, 0))
+        d = pygame.Surface((W, H), pygame.SRCALPHA); d.fill((0, 0, 0, 205 if self.movelist else 160)); surf.blit(d, (0, 0))
+        if self.movelist:
+            self.draw_movelist(surf)
+            return
         self.text(surf, "PAUSA", 64, W // 2, 200, (248, 236, 215), center=True, serif=True)
-        for i, s in enumerate(("Continuar", "Reiniciar combate", "Volver al menú")):
+        for i, s in enumerate(("Continuar", "Lista de técnicas", "Reiniciar combate", "Volver al menú")):
             sel = i == self.pause_i
-            self.text(surf, s, 36 if sel else 30, W // 2, 300 + i * 54, (255, 240, 215) if sel else (190, 180, 165), center=True, serif=sel)
+            self.text(surf, s, 36 if sel else 30, W // 2, 290 + i * 54, (255, 240, 215) if sel else (190, 180, 165), center=True, serif=sel)
         m = self.match
-        self.text(surf, f"{m.f[0].fd['name']}  {m.f[0].wins} – {m.f[1].wins}  {m.f[1].fd['name']}   ·   {m.dojo.rig['name']}", 20, W // 2, 500, (200, 190, 175), center=True)
+        self.text(surf, f"{m.f[0].fd['name']}  {m.f[0].wins} – {m.f[1].wins}  {m.f[1].fd['name']}   ·   {m.dojo.rig['name']}", 20, W // 2, 540, (200, 190, 175), center=True)
+
+    MOVE_INPUTS = [("light", "U", "Golpe ligero"), ("medium", "I", "Golpe medio"), ("heavy", "O", "Golpe fuerte"),
+                   ("low", "S + I / O", "Barrido"), ("air", "W + golpe", "Golpe aéreo"), ("grab", "J", "Agarre"),
+                   ("special", "A(atrás) + I", "Técnica de estilo"), ("kiai", "L (Kiai lleno)", "Kiai Final")]
+
+    def draw_movelist(self, surf):
+        """Lista de técnicas con datos de frames y propiedades de cada movimiento."""
+        f = self.match.f[self.movelist_p]
+        fd = f.fd
+        self.text(surf, f"{fd['name']}  ·  {fd['style']}", 40, 70, 40, (248, 236, 215), serif=True)
+        self.text(surf, "Arranque / activos / recuperación en frames a 60 fps.  A / D cambia de luchador · Esc vuelve", 18, 72, 92, (190, 180, 165))
+        cols = [(70, "Entrada"), (250, "Técnica"), (520, "Arr."), (590, "Act."), (660, "Rec."), (740, "Daño"), (830, "Propiedades")]
+        for x, lab in cols:
+            self.text(surf, lab, 18, x, 130, (255, 215, 160), shadow=False)
+        y = 160
+        for key, inp, label in self.MOVE_INPUTS:
+            m = f.moves[key]
+            props = []
+            if m.kind == "grab":
+                props.append("agarre" + ("" if m.techable else " de comando"))
+            if m.knockdown:
+                props.append("derriba")
+            if m.armor:
+                props.append(f"armadura ×{m.armor}")
+            if m.overhead:
+                props.append("alto: bloquear de pie")
+            if m.height == "low":
+                props.append("bajo: bloquear agachado")
+            if m.invuln:
+                props.append(f"invulnerable {m.invuln}f")
+            if m.multihit > 1:
+                props.append(f"{m.multihit} golpes")
+            if m.dash:
+                props.append("avanza")
+            if m.ground:
+                props.append("lleva al suelo")
+            if m.counter:
+                props.append("contraataque")
+            name = m.name if key in ("special", "kiai") else label
+            vals = [inp, name, str(m.startup), str(m.active), str(m.recovery), str(m.damage * m.multihit) if m.damage else "—", ", ".join(props)]
+            for (x, _), v in zip(cols, vals):
+                self.text(surf, v, 20, x, y, (240, 232, 218) if key not in ("special", "kiai") else (255, 225, 180), shadow=False)
+            y += 34
+            if m.desc and key in ("special", "kiai", "grab"):
+                self.text(surf, m.desc, 17, 250, y - 8, (185, 175, 160), shadow=False)
+                y += 22
+        tips = ["Golpe gana a agarre · Agarre gana a bloqueo · Bloqueo gana a golpe.",
+                "Parada perfecta: bloquea en los 4 frames previos al impacto. Golpear en el arranque del rival es CONTRA (+25 %).",
+                "Bloquear gasta aliento: sin aliento, la guardia se rompe. Ligero cancela en medio, fuerte o agarre si conecta."]
+        for t in tips:
+            self.text(surf, t, 18, 70, y + 10, (210, 200, 185), shadow=False)
+            y += 24
 
     def draw_photo_ui(self, surf):
         ph = self.photo

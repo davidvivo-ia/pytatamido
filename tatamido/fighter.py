@@ -77,6 +77,10 @@ class Fighter:
         self.ground_attacker = False
         self.stun_len = 10
         self.trail: List[tuple] = []     # estelas (afterimages) de golpes fuertes
+        self.hit_count = 0               # impactos del movimiento actual (multigolpe)
+        self.rehit_at = 0
+        self.armor_used = 0
+        self.throw_move = None           # movimiento con el que se inició la proyección
         self.combo_taken = 0             # golpes recibidos en el combo actual
         self.squash = 0.0                # aplastamiento al aterrizar
 
@@ -96,6 +100,8 @@ class Fighter:
         if self.state not in (Fighter.ATTACK, Fighter.KIAI) or self.move is None:
             return None
         m = self.move
+        if m.counter:
+            return None
         if not (m.startup <= self.timer < m.startup + m.active):
             return None
         rng = m.rng
@@ -118,6 +124,8 @@ class Fighter:
         self.move_key = key
         self.timer = 0
         self.hit_done = False
+        self.hit_count = 0
+        self.armor_used = 0
         self.stam = max(0.0, self.stam - m.stamina * (1.4 if self.exhausted else 1.0))
         self.blocking = False
         if key in ("heavy", "special", "grab"):
@@ -269,6 +277,12 @@ class Fighter:
                     self.timer = max(0, self.moves[nxt].startup // 3)   # cancel rápido
                     match.fx.spark(self.x + self.facing * 30, -120, 3, self.player_color)
                     return
+            # multigolpe: el mismo movimiento vuelve a poder golpear tras un intervalo
+            if self.hit_done and m.multihit > 1 and self.hit_count < m.multihit and self.timer >= self.rehit_at:
+                self.hit_done = False
+            # carrera durante el arranque
+            if m.dash and self.timer < m.startup and self.y >= 0:
+                self.vx = self.facing * m.dash
             # estela en frames activos de golpes fuertes
             if m.startup <= self.timer < m.startup + m.active and self.move_key in ("heavy", "special", "air") and self.timer % 2 == 0:
                 self.push_trail()
@@ -280,6 +294,9 @@ class Fighter:
                 if m.kind == "strike" and m.startup <= self.timer < m.startup + m.active:
                     self.vx = self.facing * (2.5 if m.kick else 1.8)
             if self.timer >= m.total:
+                if m.whiff_stam and not self.hit_done:
+                    self.stam = max(0.0, self.stam - m.whiff_stam)
+                    match.fx.popup("¡FALLA!", (220, 200, 190), 30, H * 0.45, 40)
                 self.state = Fighter.IDLE if self.y >= 0 else Fighter.JUMP
                 self.move = None
                 self.move_key = ""
@@ -376,8 +393,12 @@ class Fighter:
             self.trail.pop(0)
 
     # ----- recibir un golpe -----
-    def on_hit(self, m: Move, attacker: "Fighter", match: "Match"):
+    def on_hit(self, m: Move, attacker: "Fighter", match: "Match", counter=False):
         mult = 0.6 if attacker.exhausted else 1.0
+        if counter:
+            mult *= 1.25
+        if self.y < -5:
+            mult *= m.air_bonus
         dmg = int(m.damage * mult * (0.85 + 0.03 * (6 - self.fd["D"])))
         if self.state in (Fighter.HIT, Fighter.KNOCK) or self.y < 0:
             self.combo_taken += 1
@@ -401,18 +422,28 @@ class Fighter:
         else:
             self.state = Fighter.HIT
             self.timer = 0
-            self.stun_len = m.hitstun
+            self.stun_len = m.hitstun + (8 if counter else 0)
             self.vx = -self.facing * m.push / self.mass
         return dmg
 
-    def on_block(self, m: Move, attacker: "Fighter", match: "Match"):
+    def on_block(self, m: Move, attacker: "Fighter", match: "Match") -> bool:
+        """Devuelve True si la guardia se rompe (aliento agotado bloqueando)."""
         self.stam = max(0.0, self.stam - m.stamina * 0.6)
+        if self.stam <= 0.0:
+            self.state = Fighter.STUN
+            self.stun_len = 42
+            self.timer = 0
+            self.blocking = False
+            self.vx = -self.facing * 3
+            self.stam = 18.0
+            return True
         self.redness = min(1.0, self.redness + 0.04)
         self.kiai = min(KIAI_MAX, self.kiai + m.kiai_gain * 0.4)
         self.vx = -self.facing * m.push * 0.5 / self.mass
         self.stun_frames = m.blockstun
         self.state = Fighter.BLOCK
         self.block_timer = 99
+        return False
 
     # ----- Kiai Final -----
     def start_kiai(self, opp: "Fighter", match: "Match"):
@@ -496,6 +527,11 @@ class Fighter:
         cmd = {a: False for a in ACTIONS}
         fd = self.fd
         if self.state in (Fighter.INTRO, Fighter.KO, Fighter.WIN):
+            self.inp.ai_cmd = cmd
+            return
+        if self.state == Fighter.THROWN:
+            if self.timer < 7 and match.rng.random() < 0.012 + 0.03 * self.difficulty:
+                cmd["grab"] = True
             self.inp.ai_cmd = cmd
             return
         if self.state == Fighter.GROUND:
@@ -591,4 +627,8 @@ class Fighter:
                 p[k] = False
         if fd["id"] == "okabe" and opp_attacking and dist < 120 and match.rng.random() < 0.55 + 0.4 * diff:
             cmd["block"] = True   # Okabe vive de la parada perfecta
+            if opp.timer < opp.move.startup - 3 and self.can_act() and match.rng.random() < 0.35 * diff:
+                cmd["block"] = False
+                cmd[away] = True
+                cmd["medium"] = True   # Irimi: guardia de contraataque
         self.inp.ai_cmd = cmd

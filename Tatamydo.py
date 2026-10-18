@@ -8,9 +8,10 @@ que se apaga asalto a asalto.  Este fichero es el lanzador; el juego vive en el 
 `tatamido/` (config, data, audio, inputs, moves, fighter, poses, camera, render_fighter,
 fx, dojo, match, postfx, replay, game).
 
-Requisitos:  python >= 3.10, pygame-ce (o pygame >= 2.1), numpy (opcional, para el audio).
-    pip install pygame-ce numpy
-    python Tatamydo.py [--preset portatil|bajo|medio|alto|ultra|cine] [--photo-mode] [--debug-hitboxes]
+Requisitos:  python >= 3.10, pygame-ce, numpy (audio) y moderngl (renderer de shaders, opcional).
+    pip install pygame-ce numpy moderngl
+    python Tatamydo.py [--preset portatil|bajo|medio|alto|ultra|cine] [--renderer auto|gpu|cpu]
+                       [--photo-mode] [--debug-hitboxes]
                        [--ai-vs-ai] [--windowed] [--seed N]
 
 Todo lo que ves es procedimental: no hay ficheros de arte ni de audio.
@@ -26,12 +27,14 @@ import sys
 #  ARRANQUE
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_args(argv) -> dict:
-    args = dict(preset=None, photo_mode=False, debug=False, ai_vs_ai=False, windowed=True, headless=False, max_frames=0)
+    args = dict(preset=None, photo_mode=False, debug=False, ai_vs_ai=False, windowed=True, headless=False, max_frames=0, renderer=None)
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--preset" and i + 1 < len(argv):
             args["preset"] = argv[i + 1]; i += 1
+        elif a == "--renderer" and i + 1 < len(argv):
+            args["renderer"] = argv[i + 1]; i += 1
         elif a == "--photo-mode":
             args["photo_mode"] = True
         elif a == "--debug-hitboxes":

@@ -21,6 +21,9 @@ class Dojo:
         self.cfg = cfg
         self.rig = dict(LIGHT_RIGS[1])
         self.target_rig = dict(LIGHT_RIGS[1])
+        self.gpu_rig = dict(GPU_RIGS[1])
+        self.target_gpu = dict(GPU_RIGS[1])
+        self.lantern_pos = []      # (sx, sy, intensidad) del último fotograma, para la GPU
         self.t = 0.0
         self.wind = 0.0
         self.dust = [[random.uniform(-700, 700), random.uniform(-420, -10), random.uniform(0.2, 1.0)] for _ in range(cfg.get("dust", 100))]
@@ -48,6 +51,7 @@ class Dojo:
 
     def set_round(self, n: int):
         self.target_rig = dict(LIGHT_RIGS[min(n, 4)])
+        self.target_gpu = dict(GPU_RIGS[min(n, 4)])
         if n >= 3:
             self.leaf = None
             self.leaf_timer = 60 * 40  # cae a mitad del asalto final
@@ -59,6 +63,7 @@ class Dojo:
         for k in ("beam_a", "lanterns", "vignette"):
             self.rig[k] = lerp(self.rig[k], self.target_rig[k], 0.03)
         self.rig["rain"] = self.target_rig["rain"]
+        self.gpu_rig = lerp_tree(self.gpu_rig, self.target_gpu, 0.03)
         self.rig["name"] = self.target_rig["name"]
         self.wind = math.sin(self.t * 0.7) * 0.6 + math.sin(self.t * 1.9) * 0.3
         for d in self.dust:
@@ -102,8 +107,10 @@ class Dojo:
             self.decals.pop(0)
 
     # ----- dibujo -----
-    def draw(self, surf, cam: Camera, fonts: Fonts, lut_bw=False):
+    def draw(self, surf, cam: Camera, fonts: Fonts, lut_bw=False, gpu=False):
+        """Con gpu=True no se dibuja el suelo (lo pinta el shader) ni los halos (los hace el bloom)."""
         rig = self.rig
+        self.lantern_pos = []
         zoom = cam.zoom
         bgz = 0.75 + zoom * 0.25            # parallax de zoom del fondo
         par = -(cam.x) * 0.35 * zoom         # parallax horizontal
@@ -179,18 +186,21 @@ class Dojo:
                 flick = 0.85 + 0.15 * math.sin(self.t * 9 + i * 1.7) * math.sin(self.t * 3.3 + i)
                 ly = wall_top + 40
                 lw, lh = int(26 * bgz), int(40 * bgz)
-                lan = pygame.Surface((lw * 6, lh * 6))
                 k = rig["lanterns"] * flick
-                for r in range(3, 0, -1):
-                    g = int(16 * k * (4 - r) / 3)
-                    pygame.draw.circle(lan, (g * 2, int(g * 1.2), g // 2), (lw * 3, lh * 3), int(lw * (1.0 + r * 0.8)))
-                surf.blit(lan, (lx - lw * 3, ly - lh * 3 + lh // 2), special_flags=pygame.BLEND_ADD)
+                self.lantern_pos.append((lx, ly + lh / 2, k))
+                if not gpu:
+                    lan = pygame.Surface((lw * 6, lh * 6))
+                    for r in range(3, 0, -1):
+                        g = int(16 * k * (4 - r) / 3)
+                        pygame.draw.circle(lan, (g * 2, int(g * 1.2), g // 2), (lw * 3, lh * 3), int(lw * (1.0 + r * 0.8)))
+                    surf.blit(lan, (lx - lw * 3, ly - lh * 3 + lh // 2), special_flags=pygame.BLEND_ADD)
                 pygame.draw.line(surf, (40, 30, 24), (lx, wall_top), (lx, ly), 2)
                 pygame.draw.ellipse(surf, mixc((250, 190, 110), (255, 230, 180), flick - 0.8), (lx - lw // 2, ly, lw, lh))
                 for k in range(1, 4):
                     pygame.draw.line(surf, (150, 90, 50), (lx - lw // 2, ly + lh * k // 4), (lx + lw // 2, ly + lh * k // 4), 1)
         # --- suelo: tatami en perspectiva ---
-        self.draw_floor(surf, cam, floor_back)
+        if not gpu:
+            self.draw_floor(surf, cam, floor_back)
         # --- público en seiza (detrás, delante de la pared) ---
         self.draw_audience(surf, cam, floor_back)
 
@@ -273,7 +283,7 @@ class Dojo:
                 poly = [(x - 20 + sway, wall_top), (x + 70 + sway, wall_top), (x + 420, FLOOR_Y + 60), (x + 160, FLOOR_Y + 60)]
                 pygame.draw.polygon(layer, (*rig["beam"], int(a)), poly)
                 pygame.draw.polygon(layer, (*rig["beam"], int(a * 0.5)), [(x + sway, wall_top), (x + 50 + sway, wall_top), (x + 330, FLOOR_Y + 60), (x + 250, FLOOR_Y + 60)])
-        if self.single_beam > 0.05:
+        if self.single_beam > 0.05 and intensity_override is None:
             # un único haz cenital (Kokyū nage / Kiai)
             cx = W / 2
             pygame.draw.polygon(layer, (255, 230, 190, int(70 * self.single_beam)), [(cx - 60, -10), (cx + 60, -10), (cx + 260, FLOOR_Y + 40), (cx - 260, FLOOR_Y + 40)])

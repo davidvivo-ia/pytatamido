@@ -18,6 +18,43 @@ def draw_capsule(surf, c, a, b, r):
     pygame.draw.circle(surf, c, (int(b[0]), int(b[1])), int(r))
 
 
+LIGHT = (-0.72, -0.69)   # dirección de la luz en pantalla (de los shōji, arriba a la izquierda)
+
+
+def draw_limb(surf, c, a, b, r, light=LIGHT):
+    """Extremidad con volumen: sombra, tono medio desplazado hacia la luz y brillo especular estrecho.
+
+    El desplazamiento usa sólo la componente de la luz perpendicular al eje del miembro,
+    como en un cilindro iluminado de lado.
+    """
+    if r < 2:
+        draw_capsule(surf, c, a, b, r)
+        return
+    ax, ay = b[0] - a[0], b[1] - a[1]
+    ln = math.hypot(ax, ay) or 1.0
+    ax, ay = ax / ln, ay / ln
+    d = light[0] * ax + light[1] * ay
+    px, py = light[0] - d * ax, light[1] - d * ay
+    draw_capsule(surf, shade(c, 0.72), a, b, r)
+    o1 = (px * r * 0.22, py * r * 0.22)
+    draw_capsule(surf, c, (a[0] + o1[0], a[1] + o1[1]), (b[0] + o1[0], b[1] + o1[1]), r * 0.76)
+    o2 = (px * r * 0.48, py * r * 0.48)
+    draw_capsule(surf, shade(c, 1.16), (a[0] + o2[0], a[1] + o2[1]), (b[0] + o2[0], b[1] + o2[1]), r * 0.3)
+
+
+def shade_poly(surf, c, pts, light=LIGHT, k=0.18):
+    """Polígono con sombra de forma: base oscura, interior iluminado desplazado hacia la luz."""
+    pygame.draw.polygon(surf, shade(c, 0.74), pts)
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    span = max(max(p[0] for p in pts) - min(p[0] for p in pts), 1)
+    ox, oy = light[0] * span * k, light[1] * span * k * 0.5
+    inner = [(cx + (p[0] - cx) * 0.8 + ox, cy + (p[1] - cy) * 0.9 + oy) for p in pts]
+    pygame.draw.polygon(surf, c, inner)
+    hi = [(cx + (p[0] - cx) * 0.35 + ox * 2.2, cy + (p[1] - cy) * 0.6 + oy * 1.5) for p in pts]
+    pygame.draw.polygon(surf, shade(c, 1.1), hi)
+
+
 def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=False, lut_bw=False):
     """Figura articulada con ropa, luz lateral, sudor, rojeces y rim light de jugador."""
     fd = f.fd
@@ -109,21 +146,21 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
                     (fx_ + cam.S(34 * sc) * (1 if order else -1) + sway, fy_ + cam.S(2)), (fx_ - cam.S(10 * sc) * (1 if order else -1) + sway, fy_ + cam.S(2))]
             pygame.draw.polygon(surf, col(main, WX(kn), depth), poly)
             pygame.draw.lines(surf, shade(col(main, WX(kn), depth), 1.35), False, [poly[0], poly[3]], max(1, int(cam.S(1.2))))
-            draw_capsule(surf, col(skin, WX(ft), depth), (lerp(J[kn][0], J[ft][0], 0.7), lerp(J[kn][1], J[ft][1], 0.7)), J[ft], r_limb * 0.8)
+            draw_limb(surf, col(skin, WX(ft), depth), (lerp(J[kn][0], J[ft][0], 0.7), lerp(J[kn][1], J[ft][1], 0.7)), J[ft], r_limb * 0.8)
             continue
         leg_c = col(skin, WX(kn), depth)
         if pants_c is not None:
             leg_c = col(pants_c, WX(kn), depth)
         thick = r_limb * (1.15 if outfit in ("gi", "hakama", "abada") else 1.0)
-        draw_capsule(surf, leg_c, J[hipk], J[kn], thick)
+        draw_limb(surf, leg_c, J[hipk], J[kn], thick)
         if outfit in ("shorts", "mawashi", "singlet"):
             # pantalón corto / mawashi: muslo de ropa, pantorrilla de piel
             mid = (lerp(J[hipk][0], J[kn][0], 0.5), lerp(J[hipk][1], J[kn][1], 0.5))
             c2 = main if outfit != "singlet" else main
-            draw_capsule(surf, col(c2, WX(kn), depth), J[hipk], mid, thick * 1.1)
-            draw_capsule(surf, col(skin, WX(ft), depth), J[kn], J[ft], r_limb * 0.9)
+            draw_limb(surf, col(c2, WX(kn), depth), J[hipk], mid, thick * 1.1)
+            draw_limb(surf, col(skin, WX(ft), depth), J[kn], J[ft], r_limb * 0.9)
         else:
-            draw_capsule(surf, leg_c, J[kn], J[ft], thick * 0.95)
+            draw_limb(surf, leg_c, J[kn], J[ft], thick * 0.95)
         # pie
         fx_, fy_ = J[ft]
         foot_c = col(skin, WX(ft), depth)
@@ -141,7 +178,7 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
     torso_c = {"gi": main, "kurtka": main, "changshan": main, "singlet": main, "tank": trim, "hakama": trim,
                "shorts": skin, "abada": skin, "mawashi": skin}[outfit]
     tc = col(torso_c, 0)
-    pygame.draw.polygon(surf, tc, torso_poly)
+    shade_poly(surf, tc, torso_poly)
     if outfit == "mawashi":
         belly = pygame.Rect(0, 0, int(wtor * 1.9), int(cam.S(80 * sc)))
         belly.center = (int(lerp(hx, cx, 0.4) + cam.S(4) * fac), int(lerp(hy, cy, 0.45)))
@@ -186,18 +223,18 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
     arm_c_cloth = main if outfit not in ("hakama",) else trim
     for sh, el, hd, depth in (("sh_l", "el_l", "hd_l", 0.86), ("sh_r", "el_r", "hd_r", 1.0)):
         upper_c = col(arm_c_cloth if sleeve > 0 else skin, WX(el), depth)
-        draw_capsule(surf, upper_c, J[sh], J[el], r_arm * (1.2 if sleeve > 0 else 1.0))
+        draw_limb(surf, upper_c, J[sh], J[el], r_arm * (1.2 if sleeve > 0 else 1.0))
         if sleeve >= 1.0:
-            draw_capsule(surf, upper_c, J[el], J[hd], r_arm * 1.15)
+            draw_limb(surf, upper_c, J[el], J[hd], r_arm * 1.15)
         elif sleeve > 0:
             mid = (lerp(J[el][0], J[hd][0], sleeve - 0.2), lerp(J[el][1], J[hd][1], sleeve - 0.2))
-            draw_capsule(surf, upper_c, J[el], mid, r_arm * 1.15)
-            draw_capsule(surf, col(skin, WX(hd), depth), mid, J[hd], r_arm * 0.9)
+            draw_limb(surf, upper_c, J[el], mid, r_arm * 1.15)
+            draw_limb(surf, col(skin, WX(hd), depth), mid, J[hd], r_arm * 0.9)
         else:
             fore_c = col(skin, WX(hd), depth)
             if f.redness > 0.05 and not lut_bw:
                 fore_c = mixc(fore_c, (200, 60, 50), 0.35 * f.redness)
-            draw_capsule(surf, fore_c, J[el], J[hd], r_arm * 0.9)
+            draw_limb(surf, fore_c, J[el], J[hd], r_arm * 0.9)
         # mano / guantilla / prajied
         hxh, hyh = J[hd]
         hand_c = col(skin, WX(hd), depth)

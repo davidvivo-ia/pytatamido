@@ -29,6 +29,13 @@ class Match:
         self.replay = replay                         # dict con 'inputs' si estamos reproduciendo
         self.replay_pos = 0
         self.combo_popup = [0, 0]
+        # entrenamiento
+        self.fa = None                    # medición de ventaja de frames en curso
+        self.last_adv = None              # (ventaja, tipo)
+        self.dummy_mode = "IA"
+        self.rec: List[int] = []
+        self.rec_state = "off"            # off | rec | play
+        self.rec_i = 0
         self.reflect_layer = pygame.Surface((W, H), pygame.SRCALPHA)
         self.audio = audio
         self.cfg = cfg
@@ -120,8 +127,12 @@ class Match:
             for i, f in enumerate(self.f):
                 if f.is_ai:
                     f.think(self.f[1 - i], self)
+            if self.training:
+                self.training_inputs(keys)
         for f in self.f:
             f.inp.poll(keys, joys)
+        if self.training and self.rec_state == "rec":
+            self.rec.append(self.f[1].inp.mask())
         if self.replay is None:
             self.input_log.append((self.f[0].inp.mask(), self.f[1].inp.mask()))
         tscale = self.slowmo
@@ -184,7 +195,9 @@ class Match:
             a.update(b, self)
             b.update(a, self)
             self.resolve_collisions()
+            self.check_throw_tech()
             self.resolve_hits()
+            self.track_advantage()
             self.check_jogai()
             self.record_history()
             for i, f in enumerate(self.f):
@@ -275,7 +288,22 @@ class Match:
                 continue
             m = att.move
             att.hit_done = True
+            att.hit_count += 1
+            att.rehit_at = att.timer + max(2, m.active // max(1, m.multihit))
             pan = df.x / 600
+            dm = df.move if df.state == Fighter.ATTACK else None
+            # guardia de contraataque (Irimi de Okabe): el golpe se devuelve como proyección
+            if dm is not None and dm.counter and dm.startup <= df.timer < dm.startup + dm.active and m.kind == "strike":
+                self.fx.popup("IRIMI", (255, 240, 210), 46, H * 0.36, 60)
+                self.fx.do_flash(0.6, (255, 250, 235))
+                self.audio.play("parry", 1.0, pan=pan)
+                self.dojo.single_beam = 1.0
+                df.throw_move = dm
+                self.start_throw(df, att, kokyu=True, move=dm)
+                continue
+            # invulnerabilidad del arranque (anti-aéreos, guardias bajas)
+            if dm is not None and df.timer < dm.invuln and m.kind == "strike":
+                continue
             if m.kind == "grab":
                 # GOLPE gana a AGARRE: si el rival está en frames activos de golpe, el agarre falla
                 if df.state == Fighter.ATTACK and df.move and df.move.kind == "strike":
@@ -286,7 +314,19 @@ class Match:
                 if df.y < -5:
                     continue
                 # AGARRE rompe BLOQUEO (y agarra también en guardia baja)
-                self.start_throw(att, df)
+                self.start_throw(att, df, move=m)
+                continue
+            # armadura: absorbe el golpe a cambio de daño reducido
+            if dm is not None and dm.armor > df.armor_used and df.timer < dm.startup + dm.active:
+                df.armor_used += 1
+                df.take_damage(int(m.damage * 0.5), att.fd["id"])
+                self.hitstop = max(4, m.hitstop // 2)
+                self.fx.spark(df.x, df.y + m.reach_y, 10, (255, 200, 120))
+                self.fx.popup("ARMADURA", (255, 200, 140), 30, H * 0.42, 40)
+                self.audio.play("block", 1.0, pan=pan)
+                self.audio.play("hit_m", 0.5, pan=pan)
+                if df.vit <= 0:
+                    self.end_round(att, "ko")
                 continue
             # golpe
             blocked = df.state == Fighter.BLOCK and df.blocking
@@ -294,17 +334,32 @@ class Match:
                 blocked = False
             if blocked and m.height == "high" and df.crouching:
                 blocked = False
+            if blocked and m.overhead and df.crouching:
+                blocked = False
             if blocked:
                 # parada perfecta: bloqueo iniciado en los últimos 4 frames
                 if df.block_timer <= 4 or (df.fd["id"] == "okabe" and df.block_timer <= 7):
                     self.perfect_parry(df, att, m)
                     continue
-                df.on_block(m, att, self)
+                broken = df.on_block(m, att, self)
                 self.audio.play("block", 0.8, pan=pan)
                 self.fx.spark(df.x + df.facing * 20, m.reach_y if m.height != "low" else -25, 4, (200, 200, 220))
                 self.hitstop = 2
+                self.note_exchange(att, "bloqueo")
+                if broken:
+                    self.fx.popup("GUARDIA ROTA", (255, 170, 140), 46, H * 0.36, 70)
+                    self.audio.play("hit_h", 1.0, pan=pan)
+                    self.fx.ring(df.x, -120, 150, (255, 190, 150))
+                    self.shake(8)
+                    self.hitstop = 10
                 continue
-            dmg = df.on_hit(m, att, self)
+            counter = dm is not None and df.timer < dm.startup and not dm.counter
+            dmg = df.on_hit(m, att, self, counter=counter)
+            self.note_exchange(att, "golpe")
+            if counter:
+                self.fx.popup("CONTRA", (255, 210, 120), 34, H * 0.42, 45)
+                self.hitstop += 3
+                self.cam.punch = max(self.cam.punch, 0.06)
             self.intensity = min(1.0, self.intensity + 0.15)
             self.hitstop = m.hitstop
             self.shake(m.hitstop * 0.8)
@@ -324,6 +379,105 @@ class Match:
             att.rim = 1.0
             if df.vit <= 0:
                 self.end_round(att, "ko")
+
+    # ----- escape de agarre -----
+    def check_throw_tech(self):
+        for df in self.f:
+            att = df.throw_partner
+            if df.state != Fighter.THROWN or att is None or df.timer > 9:
+                continue
+            tm = att.throw_move
+            if tm is not None and not tm.techable:
+                continue
+            if df.inp.buffered("grab"):
+                att.state = Fighter.STUN
+                att.stun_len = 14
+                att.timer = 0
+                att.throw_partner = None
+                df.state = Fighter.IDLE
+                df.throw_partner = None
+                df.y = 0
+                df.x = att.x - att.facing * 70
+                df.vx = -att.facing * 6
+                att.vx = att.facing * 4
+                self.slowmo = 1.0
+                self.slowmo_t = 0
+                self.fx.popup("¡ESCAPA!", (200, 230, 255), 40, H * 0.38, 55)
+                self.fx.spark((att.x + df.x) / 2, -130, 10, (220, 230, 255))
+                self.audio.play("block", 1.0)
+                self.audio.play("whoosh", 0.7)
+                self.hitstop = 6
+
+    # ----- ventaja de frames (entrenamiento) -----
+    @staticmethod
+    def actionable(f: Fighter) -> bool:
+        return f.state in (Fighter.IDLE, Fighter.WALK, Fighter.CROUCH, Fighter.BLOCK) and f.stun_frames == 0 and f.y >= 0
+
+    def note_exchange(self, att: Fighter, kind: str):
+        self.fa = dict(att=self.f.index(att), kind=kind, free=[None, None])
+
+    def track_advantage(self):
+        fa = self.fa
+        if fa is None:
+            return
+        for i, f in enumerate(self.f):
+            if fa["free"][i] is None and self.actionable(f):
+                fa["free"][i] = self.frame
+        if None not in fa["free"]:
+            a = fa["att"]
+            self.last_adv = (fa["free"][1 - a] - fa["free"][a], fa["kind"])
+            self.fa = None
+        elif any(f.state in (Fighter.KNOCK, Fighter.THROWN, Fighter.GROUND) for f in self.f):
+            self.fa = None
+
+    # ----- muñeco de entrenamiento -----
+    DUMMY_MODES = ["IA", "Quieto", "Bloquea todo", "Bloqueo aleatorio", "Salta"]
+
+    def cycle_dummy(self):
+        i = self.DUMMY_MODES.index(self.dummy_mode)
+        self.dummy_mode = self.DUMMY_MODES[(i + 1) % len(self.DUMMY_MODES)]
+        self.fx.popup(f"Muñeco: {self.dummy_mode}", (230, 230, 230), 26, H * 0.2, 60)
+
+    def toggle_record(self):
+        if self.rec_state == "rec":
+            self.rec_state = "off"
+            self.fx.popup(f"Grabación: {len(self.rec) / 60:.1f} s", (255, 200, 200), 26, H * 0.2, 60)
+        else:
+            self.rec = []
+            self.rec_state = "rec"
+            self.fx.popup("GRABANDO: controlas al muñeco con los controles del J1", (255, 120, 110), 24, H * 0.2, 90)
+
+    def toggle_playback(self):
+        if self.rec_state == "play" or not self.rec:
+            self.rec_state = "off"
+        else:
+            self.rec_state = "play"
+            self.rec_i = 0
+            self.fx.popup("Reproduciendo grabación en bucle", (200, 220, 255), 24, H * 0.2, 60)
+
+    def training_inputs(self, keys):
+        from .inputs import ACTIONS, KEYMAP_P1
+        a, d = self.f
+        if self.rec_state == "rec":
+            d.inp.ai_cmd = {k: bool(keys[KEYMAP_P1[k]]) for k in ACTIONS}
+            a.inp.ai_cmd = {k: False for k in ACTIONS}
+            return
+        a.inp.ai_cmd = None
+        if self.rec_state == "play":
+            d.inp.ai_cmd = PlayerInput.cmd_from_mask(self.rec[self.rec_i % len(self.rec)])
+            self.rec_i += 1
+            return
+        mode = self.dummy_mode
+        if mode == "IA":
+            return
+        cmd = {k: False for k in ACTIONS}
+        if mode == "Bloquea todo" or (mode == "Bloqueo aleatorio" and (self.frame // 30) % 2 == self.rng.randrange(2)):
+            cmd["block"] = True
+            if a.state == Fighter.ATTACK and a.move is not None and a.move.height == "low":
+                cmd["down"] = True
+        elif mode == "Salta":
+            cmd["up"] = self.frame % 50 == 0
+        d.inp.ai_cmd = cmd
 
     def perfect_parry(self, df: Fighter, att: Fighter, m: Move):
         self.hitstop = 8
@@ -346,9 +500,10 @@ class Match:
             self.dojo.single_beam = 1.0
             self.slowmo = 0.35
             self.slowmo_t = 50
-            self.start_throw(df, att, kokyu=True)
+            self.start_throw(df, att, kokyu=True, move=df.moves["special"])
 
-    def start_throw(self, att: Fighter, df: Fighter, kokyu=False):
+    def start_throw(self, att: Fighter, df: Fighter, kokyu=False, move=None):
+        att.throw_move = move if move is not None else att.moves["grab"]
         att.state = Fighter.THROWING
         att.timer = 0
         att.throw_partner = df
@@ -370,10 +525,12 @@ class Match:
             self.slowmo_t = 30
 
     def on_throw_land(self, att: Fighter, df: Fighter):
-        base = att.moves["grab"].damage
+        tm = att.throw_move or att.moves["grab"]
+        base = tm.damage if tm.damage > 0 else att.moves["grab"].damage
         dmg = base
         T = att.fd["T"]
-        clean = self.rng.random() < 0.08 + 0.07 * T or att.fd["id"] == "okabe"
+        bonus = 0.15 if tm is att.moves.get("special") and tm.kind == "grab" else 0.0
+        clean = self.rng.random() < 0.08 + 0.07 * T + bonus or att.fd["id"] == "okabe"
         pan = df.x / 600
         self.fx.dust(df.x, 0, 18, 1.3)
         self.add_decal(df.x)
@@ -402,7 +559,7 @@ class Match:
             self.end_round(att, "ko")
             return
         # fase de suelo para los grapplers de suelo
-        if att.fd["ground"] and df.vit > 0 and self.rng.random() < 0.7:
+        if (tm.ground or att.fd["ground"] and self.rng.random() < 0.7) and df.vit > 0:
             self.begin_ground(att, df)
 
     # ----- fase de suelo -----
@@ -517,6 +674,7 @@ class Match:
                 loser.y = -1
         elif how == "ippon":
             self.fx.popup("IPPON", (255, 230, 170), 110, H * 0.24, 170, sub=f"{winner.fd['name']} · proyección perfecta")
+            self.fx.impact = 4
             self.audio.play("gong", 1.0)
             self.audio.play("applause", 0.8)
             self.dojo.applaud = 3.0
@@ -561,6 +719,7 @@ class Match:
         self.shake(10 if last else 4)
         self.dojo.react(0.8)
         if last:
+            self.fx.impact = 3
             self.fx.ring(df.x, y, 220)
             self.fx.dust(df.x, 0, 26, 1.6)
             if att.fd["kiai_kind"] == "barrage6":
@@ -654,6 +813,36 @@ class Match:
             pygame.draw.polygon(dark, (0, 0, 0, 0), [(cx - 80, -10), (cx + 80, -10), (cx + 300, FLOOR_Y + 60), (cx - 300, FLOOR_Y + 60)])
             surf.blit(dark, (0, 0))
         surf.blit(self.dojo.vignette(rig["vignette"] + (60 if self.ground else 0)), (0, 0))
+
+    def draw_layers(self, bg, fig, fxl, fonts: Fonts, photo=None) -> dict:
+        """Camino GPU: fondo sin suelo, luchadores y efectos en capas separadas; devuelve los parámetros de luz."""
+        from .gpu import scene_params
+        rig = self.dojo.rig
+        lut = photo["lut"] if photo else "Natural"
+        bw = lut in ("Kurosawa B/N", "Daido Moriyama")
+        bg.fill((0, 0, 0, 0))
+        fig.fill((0, 0, 0, 0))
+        fxl.fill((0, 0, 0, 0))
+        self.dojo.draw(bg, self.cam, fonts, bw, gpu=True)
+        self.dojo.draw_beams(None, self.cam, fxl, intensity_override=0)
+        order = sorted(self.f, key=lambda f: (f.state in (Fighter.ATTACK, Fighter.KIAI, Fighter.THROWING), -abs(f.y)))
+        for f in order:
+            draw_trail(fxl, f, self.cam)
+        cfg = dict(self.cfg, shadows=False)
+        for f in order:
+            draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw)
+        self.fx.draw_world(fxl, self.cam, fxl)
+        self.dojo.draw_rain(fxl)
+        extra = {}
+        if self.kiai_active is not None:
+            extra["dof"] = 7.0
+        if self.ground is not None:
+            extra["vig"] = self.dojo.gpu_rig["vig"] + 0.35
+        if self.access.get("flashes"):
+            extra["impact"] = 0.0
+        if not self.access.get("shake", True):
+            extra["tilt"] = 0.0
+        return scene_params(self.dojo, self.cam, self.f, self.fx, self.cfg, extra)
 
     def draw_hud(self, surf, fonts: Fonts):
         if self.state == Match.REPLAY:
@@ -754,7 +943,7 @@ class Match:
             pygame.draw.line(surf, (255, 255, 255), (mid, H // 2 + 146), (mid, H // 2 + 170), 2)
         # datos de frames (entrenamiento)
         if self.frame_data_overlay:
-            yy = 120
+            yy = 200
             for f in self.f:
                 st = ["IDLE", "WALK", "CROUCH", "JUMP", "ATTACK", "BLOCK", "HIT", "KNOCK", "GETUP", "THROWN", "THROWING", "KO", "WIN", "INTRO", "KIAI", "GROUND", "PARRY", "STUN"][f.state]
                 line = f"{f.fd['id']}: {st}"
@@ -765,5 +954,16 @@ class Match:
                 img = fonts.get(18).render(line, True, (255, 240, 200))
                 surf.blit(img, (40, yy))
                 yy += 20
-            hint = fonts.get(16).render("F1 hitboxes · F2 datos de frames · Esc menú", True, (180, 170, 160))
+            if self.last_adv is not None:
+                adv, kind = self.last_adv
+                col = (140, 230, 150) if adv > 0 else (240, 140, 120) if adv < 0 else (230, 230, 230)
+                img = fonts.get(28, serif=True).render(f"Ventaja en {kind}: {adv:+d}", True, col)
+                surf.blit(img, (40, yy + 4))
+                yy += 34
+            if self.training:
+                rec = {"off": "", "rec": "  ·  GRABANDO", "play": "  ·  REPRODUCIENDO"}[self.rec_state]
+                img = fonts.get(18).render(f"Muñeco: {self.dummy_mode}{rec}", True, (255, 220, 190))
+                surf.blit(img, (40, yy))
+                yy += 22
+            hint = fonts.get(16).render("F1 hitboxes · F2 datos · F3 muñeco · F4 grabar · F5 reproducir · Esc pausa", True, (180, 170, 160))
             surf.blit(hint, (40, yy))
