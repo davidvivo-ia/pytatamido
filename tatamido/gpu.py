@@ -69,6 +69,7 @@ uniform vec2 uRes;
 uniform float uTime;
 uniform vec3 uKey3, uSky, uBounce;
 uniform float uFigLit;
+uniform float uTexI;          // intensidad de las texturas procedurales (0 = lisas)
 uniform vec4 uCam;            // cam.x, zoom, base_y (px), shake_x
 uniform float uDepthScale;    // px por unidad de profundidad
 uniform float uFloorBackY;
@@ -244,6 +245,59 @@ vec3 shadeFloor(vec2 p, out float coc) {
 // 0 tinta · 1 piel · 2 algodón · 3 satén/lycra · 4 cuero · 5 pelo · 6 ojos
 float figH(vec2 q) { return Lp(tFigD, q, 1.0).r * 0.5 + Lp(tFigD, q, 2.3).r * 0.5; }
 
+// ── texturas procedurales por material ──────────────────────────────────────
+// Coordenadas en cm, ancladas a la raíz del luchador más cercano (no resbalan al moverse por el
+// tatami). Cada patrón devuelve una altura h: modula el albedo y, derivada en pantalla, inclina la
+// normal para que la luz rasante saque el grano. Todo se funde a su media cuando el detalle es
+// más fino que un píxel (sin moiré).
+float aaFade(vec2 q, float period) { float w = max(fwidth(q.x), fwidth(q.y)) / period; return 1. - clamp(w * 1.6 - 0.4, 0., 1.); }
+
+float matTex(vec2 p, int mat, out float albK, out float specK) {
+    float s = uCam.y * 0.95;
+    vec4 f = abs(p.x - uFighters[0].x) < abs(p.x - uFighters[1].x) ? uFighters[0] : uFighters[1];
+    vec2 q = (p - vec2(f.x, f.y - f.z)) / s;
+    albK = 1.; specK = 1.;
+    float h = 0.;
+    if (mat == 2) {                                  // algodón: trama de grano de arroz + hilos gruesos
+        float a = aaFade(q, 0.5);
+        vec2 c = q / vec2(0.42, 0.34);
+        vec2 cell = floor(c);
+        vec2 fc = fract(c + vec2(mod(cell.y, 2.) * 0.5, 0.)) - 0.5;
+        float grain = 1. - smoothstep(0.18, 0.5, length(fc * vec2(1.0, 1.7)));
+        float slub = vnoise(q * vec2(0.35, 2.6)) * vnoise(q * vec2(1.7, 0.25) + 9.);
+        h = (grain - 0.5) * a + (slub - 0.25) * 0.9;
+        albK = 1. + 0.07 * (grain - 0.5) * a + 0.1 * (slub - 0.25) - 0.04 * fbm(q * 0.18);
+    } else if (mat == 1) {                           // piel: moteado cálido + poros
+        float a = aaFade(q, 0.35);
+        float mott = fbm(q * 0.28);
+        float pore = vnoise(q * 3.1);
+        h = (pore - 0.5) * 0.35 * a + (mott - 0.5) * 0.3;
+        albK = 1. + 0.08 * (mott - 0.5) - 0.03 * smoothstep(0.62, 0.8, pore) * a;
+        specK = 0.75 + 0.5 * pore;
+    } else if (mat == 3) {                           // satén y lycra: vetas anisótropas verticales
+        float a = aaFade(q, 0.3);
+        float st = vnoise(vec2(q.x * 2.2, q.y * 0.1)) * 0.7 + vnoise(vec2(q.x * 7.0, q.y * 0.25)) * 0.3 * a;
+        h = (st - 0.5) * 0.25;
+        albK = 0.98 + 0.04 * st;
+        specK = 0.6 + 0.8 * st;
+    } else if (mat == 4) {                           // cuero: granulado y craquelado
+        float a = aaFade(q, 0.4);
+        float g1 = vnoise(q * 1.6);
+        float cr = (1. - smoothstep(0.015, 0.06, abs(fbm(q * 0.6) - 0.5))) * a;
+        h = (g1 - 0.5) * 0.25 * a - cr * 0.3;
+        albK = 1. - 0.1 * cr - 0.04 * (g1 - 0.5) * a;
+        specK = 0.85 + 0.3 * g1 - 0.4 * cr;
+    } else if (mat == 5) {                           // pelo: hebras finas a lo largo de la caída
+        float a = aaFade(q, 0.25);
+        float sx = q.x + 0.6 * vnoise(q * vec2(0.2, 0.5));
+        float st = vnoise(vec2(sx * 4.5, q.y * 0.3)) * 0.65 + vnoise(vec2(sx * 12., q.y * 0.7)) * 0.35 * a;
+        h = (st - 0.5) * 0.6;
+        albK = 0.9 + 0.2 * st;
+        specK = 0.4 + 1.2 * st * st;
+    }
+    return h;
+}
+
 vec3 litFighter(vec2 p, vec4 fg) {
     vec3 alb = toLin(fg.rgb);
     vec4 fd = Lp(tFigD, p);
@@ -253,12 +307,17 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float hx = figH(p + vec2(e, 0.)) - figH(p - vec2(e, 0.));
     float hy = figH(p + vec2(0., e)) - figH(p - vec2(0., e));
     float bump = mat == 5 ? 5.0 : 7.0;
-    vec3 N = normalize(vec3(-hx * bump, hy * bump, 1.0));
+    float albK, specK;
+    float th = matTex(p, mat, albK, specK) * uTexI;
+    alb *= mix(1., albK, uTexI);
+    vec2 tg = vec2(dFdx(th), -dFdy(th));                   // relieve del grano, en espacio de pantalla
+    float tb = mat == 2 ? 0.55 : mat == 4 ? 0.3 : mat == 5 ? 0.45 : 0.3;
+    vec3 N = normalize(vec3(-hx * bump - tg.x * tb, hy * bump - tg.y * tb, 1.0));
     float ao = 1. - clamp((Lp(tFigD, p, 4.2).r - fd.r) * 2.2, 0., 0.5);
     vec3 V = vec3(0., 0., 1.);
     vec3 L = normalize(uKey3);
     vec3 Hv = normalize(L + V);
-    float spec = fd.b;
+    float spec = fd.b * mix(1., specK, uTexI);
     float ndl = dot(N, L);
     // ── rampa de dos tonos (anime 2026): borde definido y suave, sombra de color desplazado ──
     float soft = mat == 1 ? 0.16 : 0.1;
@@ -288,7 +347,7 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float hi = 0.;
     if (mat == 1) hi = smoothstep(0.955, 0.985, nh) * (0.08 + 0.85 * spec);                       // sudor
     else if (mat == 3) hi = smoothstep(0.8, 0.9, nh) * 0.45 + pow(1. - N.z, 3.) * 0.15;          // satén y lycra
-    else if (mat == 4) hi = smoothstep(0.92, 0.96, nh) * 0.9;                                     // cuero
+    else if (mat == 4) hi = smoothstep(0.9, 0.97, nh) * 0.7 * spec;                                     // cuero
     else if (mat == 5) hi = smoothstep(0.86, 0.93, dot(normalize(N + vec3(0., 0.55, 0.)), Hv)) * (0.3 + 0.4 * spec);   // anillo del pelo
     else if (mat == 2) hi = smoothstep(0.62, 0.72, 1. - N.z) * 0.12;                             // fibra del algodón
     col += (uKey * lit + uLan * uLanI * 0.4) * hi + uLan * lanHi * (mat == 1 || mat == 4 ? 0.6 : 0.15);
@@ -599,7 +658,7 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
         tint=_lin(rig["tint"]), beam_i=g["beam_i"] if cfg.get("beams", True) else 0.0, lan_i=rig["lanterns"],
         refl=g["refl"], wet=g["wet"], rim=g["rim"], emissive=g["emissive"], sky_fill=g["sky_fill"],
         light_dir=g["light_dir"], shadow=g["shadow"] if cfg.get("shadows", True) else (0, 1, 0, 0),
-        lanterns=lanterns, fighters=figs, decals=decals, waves=waves,
+        lanterns=lanterns, fighters=figs, decals=decals, waves=waves, tex=float(cfg.get("tex", 1.0)),
         light_uv=g["light_uv"], rays_i=g["rays"] if cfg.get("beams", True) else 0.0, rays_col=g["rays_col"],
         exposure=g["exposure"], lift=g["lift"], gain=g["gain"], sat=g["sat"], power=g["power"],
         bloom=0.05 if cfg.get("bloom") else 0.02, ca=0.25 + (fx.ca if fx is not None else 0.0),
@@ -746,6 +805,7 @@ class GPURenderer:
         S(pr, "uRes", (float(W), float(H)))
         S(pr, "uTime", self.t)
         S(pr, "uFigLit", 1.0 if figd is not None else 0.0)
+        S(pr, "uTexI", float(p.get("tex", 1.0)))
         for k, n in (("key3", "uKey3"), ("sky", "uSky"), ("bounce", "uBounce")):
             S(pr, n, tuple(float(v) for v in p[k]))
         S(pr, "uCam", tuple(float(v) for v in p["cam"]))

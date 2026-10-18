@@ -38,6 +38,19 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   altos, sambo agazapado, ginga de capoeira que oscila, sumo hundido, línea central del wing chun, ritmo
   de muay thai, rebote de taekwondo, cuclillas de lucha, bob and weave del boxeo y hanmi del aikido.
   Los golpes nacen de esa guardia y vuelven a ella.
+- **Dibujo curvo, no poligonal:** brazos, piernas, mangas y perneras son *cintas* sobre una spline
+  Catmull-Rom cuyo radio sigue un perfil anatómico con transiciones en coseno (deltoides que nace del
+  hombro, bíceps, codo, antebrazo, muñeca; cuádriceps, rodilla, gemelo, tobillo). Las siluetas grandes
+  pasan por suavizado de Chaikin; los detalles son pinceladas que engordan en el centro y se afilan en
+  las puntas; el pelo se peina con mechones curvos y la coleta es un mechón afilado que se mece.
+- **Tinta de peso variable:** el contorno engorda en el lado que se aleja de la luz y adelgaza en el
+  iluminado, como un entintador a pincel.
+- **Rostro diseñado:** ojo con iris del color de cada ficha, pupila y brillo, párpado superior grueso,
+  cejas de pincel, nariz y rubor; puños cerrados con nudillos y manos abiertas con dedos para el agarre.
+- **Texturas procedurales por material (GPU):** trama de grano de arroz y hilos gruesos del algodón,
+  poros y moteado cálido de la piel, vetas anisótropas del satén y la lycra, granulado y craquelado del
+  cuero, hebras del pelo. Están ancladas al luchador, modulan color y brillo, inclinan la normal para
+  que la luz rasante saque el grano y se funden a su media cuando el detalle baja de un píxel (sin moiré).
 - **Iluminación por píxel de los sprites (renderer GPU):** cada luchador se dibuja dos veces, en color
   plano y en un mapa de altura y material. La GPU deriva normales de ese relieve y los ilumina con la luz
   real de cada asalto: piel con dispersión subsuperficial (borde de sombra cálido) y brillo del sudor,

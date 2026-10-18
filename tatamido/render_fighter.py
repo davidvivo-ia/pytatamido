@@ -137,6 +137,163 @@ def convex_hull(points):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  CURVAS: splines, suavizado, cintas, pinceladas y mechones
+# ─────────────────────────────────────────────────────────────────────────────
+def catmull(pts, per=5):
+    """Spline Catmull-Rom que pasa por todos los puntos (curvas suaves, sin aristas)."""
+    if len(pts) < 3:
+        if len(pts) == 2:
+            return [_lerp2(pts[0], pts[1], i / per) for i in range(per + 1)]
+        return list(pts)
+    P = [pts[0]] + list(pts) + [pts[-1]]
+    out = []
+    for i in range(1, len(P) - 2):
+        (x0, y0), (x1, y1), (x2, y2), (x3, y3) = P[i - 1], P[i], P[i + 1], P[i + 2]
+        for j in range(per):
+            t = j / per
+            t2, t3 = t * t, t * t * t
+            out.append((0.5 * (2 * x1 + (x2 - x0) * t + (2 * x0 - 5 * x1 + 4 * x2 - x3) * t2 + (3 * x1 - x0 - 3 * x2 + x3) * t3),
+                        0.5 * (2 * y1 + (y2 - y0) * t + (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 + (3 * y1 - y0 - 3 * y2 + y3) * t3)))
+    out.append(pts[-1])
+    return out
+
+
+def chaikin(pts, it=1, closed=True):
+    """Suavizado de esquinas: cada iteración corta los vértices en 1/4 y 3/4."""
+    for _ in range(it):
+        n = len(pts)
+        if n < 3:
+            return pts
+        out = []
+        rng = range(n) if closed else range(n - 1)
+        if not closed:
+            out.append(pts[0])
+        for a in rng:
+            (x0, y0), (x1, y1) = pts[a], pts[(a + 1) % n]
+            out.append((0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1))
+            out.append((0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1))
+        if not closed:
+            out.append(pts[-1])
+        pts = out
+    return pts
+
+
+def _smooth_keys(keys, u):
+    """Interpola un perfil [(u, valor)] con transición en coseno (curvas musculares suaves)."""
+    if u <= keys[0][0]:
+        return keys[0][1]
+    for i in range(1, len(keys)):
+        if u <= keys[i][0]:
+            u0, v0 = keys[i - 1]
+            u1, v1 = keys[i]
+            t = (u - u0) / max(1e-6, u1 - u0)
+            t = (1 - math.cos(math.pi * t)) * 0.5
+            return v0 + (v1 - v0) * t
+    return keys[-1][1]
+
+
+def ribbon_frame(C, n_per=6):
+    """Línea central suavizada, longitud normalizada y normales izquierdas."""
+    P = catmull(C, n_per)
+    L = [0.0]
+    for a in range(1, len(P)):
+        L.append(L[-1] + math.hypot(P[a][0] - P[a - 1][0], P[a][1] - P[a - 1][1]))
+    tot = L[-1] or 1.0
+    U = [l / tot for l in L]
+    Nn = []
+    for a in range(len(P)):
+        b0, b1 = P[max(0, a - 1)], P[min(len(P) - 1, a + 1)]
+        tx, ty = _norm(b1[0] - b0[0], b1[1] - b0[1])
+        if tx == 0 and ty == 0:
+            tx, ty = 0.0, 1.0
+        Nn.append((-ty, tx))
+    return P, U, Nn
+
+
+LIGHT_V = (-0.72, -0.69)
+
+
+def _wgt(nx, ny, ow, weighted):
+    """Peso de la tinta: más grueso en el lado que mira lejos de la luz."""
+    if not weighted:
+        return ow
+    d = -(nx * LIGHT_V[0] + ny * LIGHT_V[1])
+    return ow * (0.6 + 1.0 * clamp(d, 0.0, 1.0))
+
+
+def ribbon_pts(frame, keys_l, keys_r, k, grow=0.0, kk=1.0, shift=0.0, weighted=False):
+    """Contorno de una cinta de radio variable (miembro orgánico continuo) con tapas redondas."""
+    P, U, Nn = frame
+    if not isinstance(keys_l[0], (int, float)):          # perfil por claves → radios por vértice
+        keys_l = [_smooth_keys(keys_l, u) for u in U]
+        keys_r = [_smooth_keys(keys_r, u) for u in U]
+    left, right = [], []
+    rl_end = rr_end = rl0 = rr0 = 0.0
+    kq = k * kk
+    for (cx, cy), rl, rr, (nx, ny) in zip(P, keys_l, keys_r, Nn):
+        rl *= kq
+        rr *= kq
+        if shift:
+            d = nx * LIGHT_V[0] + ny * LIGHT_V[1]
+            sx, sy = nx * d * shift * (rl + rr) * 0.5, ny * d * shift * (rl + rr) * 0.5
+        else:
+            sx = sy = 0.0
+        gl = _wgt(nx, ny, grow, weighted) if grow else 0.0
+        gr = _wgt(-nx, -ny, grow, weighted) if grow else 0.0
+        left.append((cx + sx + nx * (rl + gl), cy + sy + ny * (rl + gl)))
+        right.append((cx + sx - nx * (rr + gr), cy + sy - ny * (rr + gr)))
+        rl_end, rr_end = rl + gl, rr + gr
+        if len(left) == 1:
+            rl0, rr0 = rl + gl, rr + gr
+    # tapas: semicírculo en cada extremo
+    def cap(c, n, r, sgn):
+        out = []
+        tx, ty = n[1], -n[0]               # tangente real: la tapa final avanza, la inicial retrocede
+        for j in range(1, 5):
+            th = math.pi * j / 5
+            ca, sa = math.cos(th), math.sin(th)
+            out.append((c[0] + (n[0] * ca + tx * sa) * r * sgn, c[1] + (n[1] * ca + ty * sa) * r * sgn))
+        return out
+    ce, ne = (left[-1][0] + right[-1][0]) * 0.5, (left[-1][1] + right[-1][1]) * 0.5
+    cs, ns = (left[0][0] + right[0][0]) * 0.5, (left[0][1] + right[0][1]) * 0.5
+    capb = cap((ce, ne), Nn[-1], (rl_end + rr_end) * 0.5, 1)
+    capa = cap((cs, ns), Nn[0], (rl0 + rr0) * 0.5, -1)
+    return left + capb + right[::-1] + capa
+
+
+def brush_pts(pts, w, taper=True, per=4):
+    """Pincelada: trazo suavizado que engorda en el centro y se afila en las puntas."""
+    P = catmull(pts, per) if len(pts) > 2 else catmull(pts, per)
+    if len(P) < 2:
+        return []
+    n = len(P)
+    left, right = [], []
+    for a in range(n):
+        b0, b1 = P[max(0, a - 1)], P[min(n - 1, a + 1)]
+        tx, ty = _norm(b1[0] - b0[0], b1[1] - b0[1])
+        t = a / (n - 1)
+        hw = w * 0.5 * ((0.2 + 0.8 * math.sin(math.pi * t) ** 0.6) if taper else 1.0)
+        left.append((P[a][0] - ty * hw, P[a][1] + tx * hw))
+        right.append((P[a][0] + ty * hw, P[a][1] - tx * hw))
+    return left + right[::-1]
+
+
+def lock_pts(base, ctrl, tip, w0):
+    """Mechón de pelo: base ancha, curva por un punto de control, punta afilada."""
+    P = catmull([base, ctrl, tip], 5)
+    n = len(P)
+    left, right = [], []
+    for a in range(n):
+        b0, b1 = P[max(0, a - 1)], P[min(n - 1, a + 1)]
+        tx, ty = _norm(b1[0] - b0[0], b1[1] - b0[1])
+        t = a / (n - 1)
+        hw = w0 * 0.5 * (1 - t) ** 0.8
+        left.append((P[a][0] - ty * hw, P[a][1] + tx * hw))
+        right.append((P[a][0] + ty * hw, P[a][1] - tx * hw))
+    return left + right[::-1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  FIGURA: lista de piezas por grupo de profundidad
 # ─────────────────────────────────────────────────────────────────────────────
 class Figure:
@@ -152,47 +309,124 @@ class Figure:
         self.mat = mat
         self.groove = groove
 
-    def tube(self, g, a, b, ra, rb, color, bulge=0.0, bt=0.45, side=0.0, outline=True, shade_=True, sheen=1.0, edge=False):
-        self.parts.append((g, "tube", (a, b, ra, rb, bulge, bt, side), color, outline, shade_, sheen, edge, self.mat, False))
+    def _add(self, g, kind, geo, color, outline, shade_, sheen, edge, groove=False):
+        self.parts.append((g, kind, geo, color, outline, shade_, sheen, edge, self.mat, groove))
 
-    def poly(self, g, pts, color, outline=True, shade_=True, sheen=1.0, edge=False):
+    def tube(self, g, a, b, ra, rb, color, bulge=0.0, bt=0.45, side=0.0, outline=True, shade_=True, sheen=1.0, edge=False):
+        self._add(g, "tube", (a, b, ra, rb, bulge, bt, side), color, outline, shade_, sheen, edge)
+
+    def ribbon(self, g, C, keys_l, keys_r, color, outline=True, shade_=True, sheen=1.0, edge=False):
+        """Miembro continuo por una spline: C son las articulaciones; keys_* perfiles [(u, radio)]."""
+        self._add(g, "ribbon", (list(C), keys_l, keys_r), color, outline, shade_, sheen, edge)
+
+    def poly(self, g, pts, color, outline=True, shade_=True, sheen=1.0, edge=False, smooth=1):
         if len(pts) >= 3:
-            self.parts.append((g, "poly", pts, color, outline, shade_, sheen, edge, self.mat, False))
+            if smooth and len(pts) >= 4:
+                pts = chaikin(pts, smooth)
+            self._add(g, "poly", pts, color, outline, shade_, sheen, edge)
 
     def circle(self, g, c, r, color, outline=True, shade_=True, sheen=1.0, edge=False):
-        self.parts.append((g, "circle", (c, r), color, outline, shade_, sheen, edge, self.mat, False))
+        self._add(g, "circle", (c, r), color, outline, shade_, sheen, edge)
 
-    def line(self, g, pts, color, w, closed=False):
-        self.parts.append((g, "line", (pts, w, closed), color, False, False, 0.0, False, self.mat, self.groove))
+    def line(self, g, pts, color, w, closed=False, taper=None):
+        if taper is None:
+            taper = w < 0.8 and not closed
+        self._add(g, "line", (pts, w, closed, taper), color, False, False, 0.0, False, self.groove)
 
     def dot(self, g, c, r, color):
-        self.parts.append((g, "dot", (c, r), color, False, False, 0.0, False, self.mat, self.groove))
+        self._add(g, "dot", (c, r), color, False, False, 0.0, False, self.groove)
 
 
-def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=True):
+def _geom(kind, geo, T, k, fac, cache, key):
+    """Geometría en el lienzo de una pieza (cacheada por pasada)."""
+    if kind == "ribbon":
+        fr = cache.get(key)
+        if fr is None:
+            C, kl, kr = geo
+            frame = ribbon_frame([T(q) for q in C])
+            if fac != 1:
+                kl, kr = kr, kl
+            U = frame[1]
+            # radios evaluados una vez por pasada: contorno, relleno, luces y mapa de datos los comparten
+            fr = (frame, ([_smooth_keys(kl, u) for u in U], [_smooth_keys(kr, u) for u in U]))
+            cache[key] = fr
+        return fr
+    return None
+
+
+def _outline_part(surf, kind, geo, T, k, ow, ocol, fac, cache, key):
+    """Contorno de peso variable. La geometría queda en la caché para que el mapa de datos la reutilice."""
+    lx, ly = LIGHT
+    sh = (-lx * ow * 0.35, -ly * ow * 0.35)      # tinta desplazada hacia la sombra: trazo de peso variable
+    if kind == "circle":
+        c, r = geo
+        cc = T(c)
+        o = ("c", (cc[0] + sh[0], cc[1] + sh[1]), r * k + ow * 0.8)
+        pygame.draw.circle(surf, ocol, (int(o[1][0]), int(o[1][1])), int(o[2]))
+        cache[("o", key)] = o
+        return
+    if kind == "tube":
+        a, b, ra, rb, bu, bt, side = geo
+        P = tube_pts(T(a), T(b), ra * k, rb * k, bu * k, bt, side * fac, grow=ow * 0.8, off=sh)
+    elif kind == "ribbon":
+        frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, key)
+        P = ribbon_pts(frame, kl, kr, k, grow=ow, weighted=True)
+    elif kind == "poly":
+        P = _offset_weighted([T(q) for q in geo], ow)
+    else:
+        return
+    pygame.draw.polygon(surf, ocol, P)
+    cache[("o", key)] = ("p", P)
+
+
+def _draw_cached_outline(surf, o, inv, col):
+    if o[0] == "c":
+        pygame.draw.circle(surf, col, (int(o[1][0] * inv), int(o[1][1] * inv)), max(1, int(o[2] * inv)))
+    else:
+        pygame.draw.polygon(surf, col, [(x * inv, y * inv) for x, y in o[1]])
+
+
+def _offset_weighted(pts, ow):
+    """Desplazamiento del contorno con peso variable según la orientación respecto a la luz."""
+    n = len(pts)
+    if n < 3:
+        return pts
+    s = 1.0 if poly_area(pts) > 0 else -1.0
+    out = []
+    for i in range(n):
+        x0, y0 = pts[i - 1]
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        e1 = _norm(x1 - x0, y1 - y0)
+        e2 = _norm(x2 - x1, y2 - y1)
+        nx, ny = (e1[1] + e2[1]) * s, (-e1[0] - e2[0]) * s
+        ln = math.hypot(nx, ny)
+        if ln < 1e-6:
+            nx, ny = e1[1] * s, -e1[0] * s
+        else:
+            nx, ny = nx / ln, ny / ln
+        d = _wgt(nx, ny, ow, True)
+        out.append((x1 + nx * d, y1 + ny * d))
+    return out
+
+
+def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=True, cache=None):
     """Pinta la figura en `surf`. T: local→lienzo; k: píxeles de lienzo por cm."""
     lx, ly = LIGHT
     groups: Dict[int, list] = {}
-    for p in fig.parts:
-        groups.setdefault(p[0], []).append(p)
+    for idx, p in enumerate(fig.parts):
+        groups.setdefault(p[0], []).append((idx, p))
     edge_w = max(1, int(ss * 0.8))
+    if cache is None:
+        cache = {}
     for g in sorted(groups):
         ps = groups[g]
-        # 1) contorno del grupo
-        for _, kind, geo, col, outline, _s, _sh, _e, _m, _gr in ps:
-            if not outline:
-                continue
-            if kind == "tube":
-                a, b, ra, rb, bu, bt, side = geo
-                pygame.draw.polygon(surf, ocol, tube_pts(T(a), T(b), ra * k, rb * k, bu * k, bt, side * fac, grow=ow))
-            elif kind == "poly":
-                pygame.draw.polygon(surf, ocol, offset_poly([T(q) for q in geo], ow))
-            elif kind == "circle":
-                c, r = geo
-                cc = T(c)
-                pygame.draw.circle(surf, ocol, (int(cc[0]), int(cc[1])), int(r * k + ow))
-        # 2) relleno con sombreado de tres tonos
-        for _, kind, geo, col, outline, shd, sheen, edge, mat, groove in ps:
+        # 1) contorno del grupo, con peso de pincel
+        for idx, (_, kind, geo, col, outline, _s, _sh, _e, _m, _gr) in ps:
+            if outline:
+                _outline_part(surf, kind, geo, T, k, ow, ocol, fac, cache, idx)
+        # 2) relleno (sombreado de tres tonos sólo en el renderer CPU)
+        for idx, (_, kind, geo, col, outline, shd, sheen, edge, mat, groove) in ps:
             if flat is not None:
                 col = flat
                 shd = False
@@ -213,12 +447,26 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
                     pygame.draw.polygon(surf, shade(col, 0.68), tube_pts(A, B, ra_, rb_, bu_, bt, sd))
                     pygame.draw.polygon(surf, col, tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.8, off=(px * r * 0.2, py * r * 0.2)))
                     if sheen > 0:
-                        hi = shade(col, 1.1 + 0.08 * sheen)
-                        pygame.draw.polygon(surf, hi, tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.28, off=(px * r * 0.5, py * r * 0.5)))
+                        pygame.draw.polygon(surf, shade(col, 1.1 + 0.08 * sheen), tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.28, off=(px * r * 0.5, py * r * 0.5)))
                 else:
-                    pygame.draw.polygon(surf, col, tube_pts(A, B, ra_, rb_, bu_, bt, sd))
+                    Pf = tube_pts(A, B, ra_, rb_, bu_, bt, sd)
+                    pygame.draw.polygon(surf, col, Pf)
+                    cache[("f", idx)] = Pf
                 if edge:
                     pygame.draw.polygon(surf, shade(col, 0.55), tube_pts(A, B, ra_, rb_, bu_, bt, sd), edge_w)
+            elif kind == "ribbon":
+                frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
+                if shd:
+                    pygame.draw.polygon(surf, shade(col, 0.68), ribbon_pts(frame, kl, kr, k))
+                    pygame.draw.polygon(surf, col, ribbon_pts(frame, kl, kr, k, kk=0.8, shift=0.25))
+                    if sheen > 0:
+                        pygame.draw.polygon(surf, shade(col, 1.1 + 0.08 * sheen), ribbon_pts(frame, kl, kr, k, kk=0.3, shift=0.55))
+                else:
+                    Pf = ribbon_pts(frame, kl, kr, k)
+                    pygame.draw.polygon(surf, col, Pf)
+                    cache[("f", idx)] = Pf
+                if edge:
+                    pygame.draw.polygon(surf, shade(col, 0.55), cache.get(("f", idx)) or ribbon_pts(frame, kl, kr, k), edge_w)
             elif kind == "poly":
                 P = [T(q) for q in geo]
                 if shd:
@@ -255,14 +503,17 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
                 if edge:
                     pygame.draw.circle(surf, shade(col, 0.55), (int(cc[0]), int(cc[1])), max(1, int(rr)), edge_w)
             elif kind == "line":
-                pts, w, closed = geo
+                pts, w, closed, taper = geo
                 P = [T(q) for q in pts]
-                wpx = max(1, int(w * k))
+                wpx = w * k
                 if len(P) >= 2:
-                    pygame.draw.lines(surf, col, closed, P, wpx)
-                    if wpx >= 4:
-                        for q in (P[0], P[-1]):
-                            pygame.draw.circle(surf, col, (int(q[0]), int(q[1])), wpx // 2)
+                    if wpx >= 2.0 and (taper or (not closed and wpx >= 3)):     # bajo 2 px el afilado no se ve
+                        bp = brush_pts(P, wpx, taper=taper)
+                        if len(bp) >= 3:
+                            pygame.draw.polygon(surf, col, bp)
+                            cache[("f", idx)] = bp
+                    else:
+                        pygame.draw.lines(surf, col, closed, P, max(1, int(wpx)))
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
@@ -272,43 +523,51 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
 GROUP_H = {0: 46, 1: 66, 2: 106, 3: 126, 4: 150, 5: 176, 6: 210}
 
 
-def _render_data(fig: Figure, surf, T, k, ow, fac=1):
+def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0):
     """Mapa de datos para la luz por píxel: R altura, G material, B brillo.
 
     Cada grupo de profundidad tiene su altura base; cada pieza añade una cúpula interior y los
     surcos (músculos, pliegues, nudillos) la rebajan. La GPU deriva normales de esta altura.
     """
     groups: Dict[int, list] = {}
-    for p in fig.parts:
-        groups.setdefault(p[0], []).append(p)
+    for idx, p in enumerate(fig.parts):
+        groups.setdefault(p[0], []).append((idx, p))
     M = Figure.MATS
+    cache: dict = {}
     for g in sorted(groups):
         ps = groups[g]
         h0 = GROUP_H.get(g, 120)
         ink = (max(0, h0 - 34), 0, 0)
-        for _, kind, geo, col, outline, _s, _sh, _e, _m, _gr in ps:
-            if not outline:
-                continue
-            if kind == "tube":
-                a, b, ra, rb, bu, bt, side = geo
-                pygame.draw.polygon(surf, ink, tube_pts(T(a), T(b), ra * k, rb * k, bu * k, bt, side * fac, grow=ow))
-            elif kind == "poly":
-                pygame.draw.polygon(surf, ink, offset_poly([T(q) for q in geo], ow))
-            elif kind == "circle":
-                c, r = geo
-                cc = T(c)
-                pygame.draw.circle(surf, ink, (int(cc[0]), int(cc[1])), int(r * k + ow))
-        for _, kind, geo, col, outline, shd, sheen, edge, mat, groove in ps:
+        for idx, (_, kind, geo, col, outline, _s, _sh, _e, _m, _gr) in ps:
+            if outline:
+                o = shared.get(("o", idx)) if shared is not None else None
+                if o is not None:
+                    _draw_cached_outline(surf, o, inv, ink)        # misma tinta que el albedo, reescalada
+                else:
+                    _outline_part(surf, kind, geo, T, k, ow, ink, fac, cache, idx)
+            if kind == "ribbon" and shared is not None and idx in shared and idx not in cache:
+                (P, U, Nn), radii = shared[idx]
+                cache[idx] = (([(x * inv, y * inv) for x, y in P], U, Nn), radii)
+        for idx, (_, kind, geo, col, outline, shd, sheen, edge, mat, groove) in ps:
             mid = M.get(mat, 2) * 36
             spec = int(clamp(sheen * 55, 0, 255))
             base = (h0, mid, spec)
             dome = (min(255, h0 + 18), mid, spec)
+            pf = shared.get(("f", idx)) if shared is not None else None
+            if pf is not None and kind in ("tube", "ribbon"):
+                pygame.draw.polygon(surf, base, [(x * inv, y * inv) for x, y in pf])     # misma silueta que el albedo
             if kind == "tube":
                 a, b, ra, rb, bu, bt, side = geo
                 A, B = T(a), T(b)
-                pygame.draw.polygon(surf, base, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac))
+                if pf is None:
+                    pygame.draw.polygon(surf, base, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac))
                 if (ra + rb) * k > 4:
                     pygame.draw.polygon(surf, dome, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac, k=0.5))
+            elif kind == "ribbon":
+                frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
+                if pf is None:
+                    pygame.draw.polygon(surf, base, ribbon_pts(frame, kl, kr, k))
+                pygame.draw.polygon(surf, dome, ribbon_pts(frame, kl, kr, k, kk=0.5))
             elif kind == "poly":
                 P = [T(q) for q in geo]
                 pygame.draw.polygon(surf, base, P)
@@ -323,11 +582,19 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1):
                 if r * k > 3:
                     pygame.draw.circle(surf, dome, (int(cc[0]), int(cc[1])), max(1, int(r * k * 0.55)))
             elif kind == "line":
-                pts, w, closed = geo
+                pts, w, closed, taper = geo
                 P = [T(q) for q in pts]
                 if len(P) >= 2:
                     val = (max(0, h0 - 22), mid, spec) if groove else (h0 + 4, mid, spec)
-                    pygame.draw.lines(surf, val, closed, P, max(1, int(w * k * (1.6 if groove else 1.0))))
+                    wpx = max(1.0, w * k * (1.6 if groove else 1.0))
+                    if pf is not None and not groove:
+                        bp = [(x * inv, y * inv) for x, y in pf]
+                    else:
+                        bp = brush_pts(P, wpx, taper=taper) if not closed and wpx >= 2.0 else []
+                    if len(bp) >= 3:
+                        pygame.draw.polygon(surf, val, bp)
+                    else:
+                        pygame.draw.lines(surf, val, closed, P, max(1, int(wpx)))
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
@@ -419,9 +686,15 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     cloth = lk.get("cloth", "#FFFFFF")
     skin_sheen = 0.6 + 2.2 * sweat
     J = pose
-    H, Cc, Hd0 = J["hip"], J["chest"], J["head"]
-    # el esqueleto de poses deja 36 cm entre esternón y cabeza; un cuerpo real deja ~24
-    Hd = _lerp2(Cc, Hd0, 0.68)
+    H, Cc0, Hd0 = J["hip"], J["chest"], J["head"]
+    # el esqueleto de poses deja los hombros bajos y la cabeza lejos (36 cm): subimos la cintura
+    # escapular y acercamos la cabeza para un cuello real de ~8 cm visibles
+    lift = ((Hd0[0] - Cc0[0]) * 0.15, (Hd0[1] - Cc0[1]) * 0.15)
+    J = dict(J)
+    for jn, w in (("chest", 1.0), ("sh_l", 0.55), ("sh_r", 0.55), ("el_l", 0.2), ("el_r", 0.2)):
+        J[jn] = (J[jn][0] + lift[0] * w, J[jn][1] + lift[1] * w)
+    Cc = J["chest"]
+    Hd = _lerp2(Cc0, Hd0, 0.64)
 
     # ── columna y torso ──────────────────────────────────────────────────────
     N = _lerp2(Cc, Hd, 0.06)
@@ -455,6 +728,24 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     feet = lk.get("feet", "descalzo")
     th0, th1, thb = B["thigh"]
     ca0, ca1, cab = B["calf"]
+    def dist(a, b):
+        return math.hypot(b[0] - a[0], b[1] - a[1])
+
+    def leg_keys(L1, L2, add=0.0):
+        """Perfil anatómico continuo: cuádriceps delante, glúteo-isquio detrás, rodilla, gemelo, tobillo."""
+        uk = L1 / max(1e-6, L1 + L2)
+        back = [(0.0, th0 + add), (uk * 0.4, th0 * 0.93 + add), (uk * 0.85, th1 * 1.05 + add), (uk, th1 * 0.95 + add),
+                (uk + (1 - uk) * 0.28, ca0 * 0.92 + cab + add), (uk + (1 - uk) * 0.75, ca1 * 1.12 + add), (1.0, ca1 + add)]
+        front = [(0.0, th0 * 0.95 + add), (uk * 0.35, th0 * 0.9 + thb + add), (uk * 0.82, th1 * 1.02 + thb * 0.35 + add),
+                 (uk, th1 + 0.3 + add), (uk + (1 - uk) * 0.3, ca0 * 0.9 + add), (uk + (1 - uk) * 0.75, ca1 * 1.05 + add), (1.0, ca1 + add)]
+        return back, front
+
+    def cloth_keys(L1, L2, r0, rk, r1, bag=0.0):
+        uk = L1 / max(1e-6, L1 + L2)
+        back = [(0.0, r0 + bag), (uk * 0.55, (r0 + rk) * 0.5 + bag * 1.4), (uk, rk + bag), (1.0, r1)]
+        front = [(0.0, r0), (uk * 0.6, (r0 + rk) * 0.5 - 0.3), (uk, rk + 0.4), (1.0, r1)]
+        return back, front
+
     for side, g, depth in (("l", 1, 0.84), ("r", 3, 1.0)):
         kn, ft = J["kn_" + side], J["ft_" + side]
         sx, sy = _norm(ft[0] - kn[0], ft[1] - kn[1])
@@ -464,77 +755,96 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         fdx, fdy = sy, -sx                   # el pie, perpendicular a la espinilla
         x_m = kn[0]
         sk = C(skin, x_m, depth)
+        L1, L2 = dist(H, kn), dist(kn, ankle)
         if bottom != "hakama":
             fig.m("skin")
-            fig.tube(g, H, kn, th0, th1, sk, bulge=thb, bt=0.35, side=-1, sheen=skin_sheen)
-            fig.tube(g, kn, ankle, ca0, ca1, sk, bulge=cab, bt=0.3, side=1, sheen=skin_sheen)
+            kb, kf = leg_keys(L1, L2)
+            fig.ribbon(g, [H, kn, ankle], kb, kf, sk, sheen=skin_sheen)
+            if lk["body"] in ("atleta", "fibroso", "pesado", "atleta_f") and bottom in ("shorts_thai", "shorts_sambo", "singlet", "mawashi"):
+                fig.m("skin", True)
+                fig.line(g, [_lerp2(kn, ankle, 0.12), _lerp2(kn, ankle, 0.42)], shade(sk, 0.8), 0.35)     # gemelo
         # pie
         def F_(a, b):
             return (ankle[0] + fdx * a + sx * b, ankle[1] + fdy * a + sy * b)
         if feet in ("botas", "botas_altas", "zapatillas"):
             bc = C(lk.get("boots", "#F2F2F2") if feet != "zapatillas" else "#EDEDED", x_m, depth)
-            foot = [F_(-5, -3), F_(-5.5, 6.5), F_(17.5, 6.5), F_(18, 3.5), F_(12, 0.5), F_(4, -3.5)]
+            foot = [F_(-5, -3), F_(-5.5, 6.5), F_(17.5, 6.5), F_(18.5, 3.5), F_(12, 0.5), F_(4, -3.5)]
             fig.m("leather")
-            fig.poly(g, foot, bc, sheen=1.5)
+            fig.poly(g, foot, bc, sheen=1.5, smooth=2)
             sole = C("#1E1A18" if feet != "zapatillas" else "#222222", x_m, depth)
-            fig.line(g, [F_(-5.3, 5.8), F_(17.7, 5.8)], sole, 1.6)
+            fig.line(g, [F_(-5.3, 5.9), F_(6, 6.1), F_(17.7, 5.6)], sole, 1.4, taper=False)
             if feet == "zapatillas":
-                fig.line(g, [F_(2, 2.5), F_(9, 0.5)], C("#1A1A1A", x_m, depth), 1.0)
-                fig.line(g, [F_(5, 3.5), F_(12, 1.5)], C("#1A1A1A", x_m, depth), 1.0)
+                fig.line(g, [F_(1, 2.8), F_(5, 1.5), F_(10, 1.0)], C("#1A1A1A", x_m, depth), 0.9)
+                fig.line(g, [F_(4, 4.0), F_(8, 2.6), F_(13, 2.2)], C("#1A1A1A", x_m, depth), 0.9)
             else:
                 top = 0.62 if feet == "botas" else 0.32
-                fig.tube(g, _lerp2(kn, ankle, top), ankle, ca1 + 1.5 + (1.0 if feet == "botas_altas" else 0), ca1 + 1.6, bc, sheen=1.4)
-                fig.line(g, [_lerp2(kn, ankle, top + 0.08), _lerp2(kn, ankle, 0.95)], shade(bc, 1.35), 0.6)
+                b0 = _lerp2(kn, ankle, top)
+                rb = ca1 + 1.5 + (1.0 if feet == "botas_altas" else 0)
+                fig.ribbon(g, [b0, _lerp2(b0, ankle, 0.5), ankle], [(0, rb), (1, ca1 + 1.6)], [(0, rb - 0.3), (1, ca1 + 1.5)], bc, sheen=1.4)
+                fig.m("leather", True)
+                for q in (0.2, 0.45, 0.7):
+                    pq = _lerp2(b0, ankle, q)
+                    fig.line(g, [(pq[0] - 2, pq[1]), (pq[0] + 2.5, pq[1] + 1.2)], shade(bc, 1.4), 0.35)       # cordones
         else:
-            foot = [F_(-3.5, -1.5), F_(-4.5, 3.5), F_(-3.5, 6.0), F_(12, 6.0), F_(16.5, 5.2), F_(16.2, 3.0), F_(9, 1.3), F_(3, -1.6)]
+            foot = [F_(-3.5, -1.5), F_(-4.8, 3.5), F_(-3.5, 6.0), F_(6, 6.3), F_(12.5, 6.0), F_(16.8, 5.2), F_(16.6, 3.2), F_(9, 1.3), F_(3, -1.6)]
             fig.m("skin")
-            fig.poly(g, foot, sk, sheen=skin_sheen * 0.5)
+            fig.poly(g, foot, sk, sheen=skin_sheen * 0.5, smooth=2)
             fig.m("skin", True)
-            fig.line(g, [F_(13.5, 5.2), F_(13.8, 3.6)], shade(sk, 0.75), 0.35)
+            fig.line(g, [F_(12.8, 5.4), F_(13.3, 3.9)], shade(sk, 0.72), 0.3)
+            fig.line(g, [F_(14.8, 5.3), F_(15.2, 3.8)], shade(sk, 0.72), 0.25)
+            fig.line(g, [F_(-1.5, 1.0), F_(2.5, 0.0), F_(6, 0.8)], shade(sk, 0.82), 0.3)                    # tendón
         # ropa de las piernas
         if bottom == "gi":
             pc = C(lk.get("pants", cloth), x_m, depth)
             hem = _lerp2(kn, ankle, 0.86)
             fig.m("cloth")
-            fig.tube(g, H, kn, th0 + 3.0, th1 + 3.4, pc, sheen=0.5, edge=True)
-            fig.tube(g, kn, hem, th1 + 3.2, ca1 + 4.2, pc, sheen=0.5, edge=True)
+            kb, kf = cloth_keys(L1, dist(kn, hem), th0 + 3.2, th1 + 3.5, ca1 + 4.3, bag=0.8)
+            fig.ribbon(g, [H, kn, hem], kb, kf, pc, sheen=0.5, edge=True)
             fig.m("cloth", True)
-            fig.line(g, [_lerp2(kn, hem, 0.1), _lerp2(H, kn, 0.86), _lerp2(kn, hem, 0.25)], shade(pc, 0.78), 0.5)
+            fig.line(g, [_lerp2(H, kn, 0.8), _lerp2(kn, hem, 0.05), _lerp2(kn, hem, 0.28)], shade(pc, 0.78), 0.5)
+            fig.line(g, [_lerp2(H, kn, 0.55), _lerp2(H, kn, 0.72)], shade(pc, 0.8), 0.4)
+            fig.line(g, [_lerp2(kn, hem, 0.62), _lerp2(kn, hem, 0.9)], shade(pc, 0.8), 0.4)
         elif bottom == "abada":
             pc = C(cloth, x_m, depth)
             fig.m("cloth")
-            fig.tube(g, H, kn, th0 + 2.2, th1 + 2.6, pc, sheen=0.5, edge=True)
-            fig.tube(g, kn, ankle, th1 + 2.4, ca1 + 1.2, pc, sheen=0.5, edge=True)
+            kb, kf = cloth_keys(L1, L2, th0 + 2.4, th1 + 2.8, ca1 + 1.3, bag=0.6)
+            fig.ribbon(g, [H, kn, ankle], kb, kf, pc, sheen=0.5, edge=True)
+            fig.m("cloth", True)
+            fig.line(g, [_lerp2(H, kn, 0.7), _lerp2(kn, ankle, 0.1), _lerp2(kn, ankle, 0.3)], shade(pc, 0.8), 0.45)
         elif bottom == "track":
             pc = C(lk["pants"], x_m, depth)
             hem = _lerp2(kn, ankle, 0.94)
             fig.m("satin")
-            fig.tube(g, H, kn, th0 + 2.4, th1 + 2.4, pc, sheen=0.8, edge=True)
-            fig.tube(g, kn, hem, th1 + 2.3, ca1 + 2.6, pc, sheen=0.8, edge=True)
-            fig.line(g, [H, kn, hem], C("#FFFFFF", x_m, depth), 0.9)
+            kb, kf = cloth_keys(L1, dist(kn, hem), th0 + 2.4, th1 + 2.4, ca1 + 2.6, bag=0.4)
+            fig.ribbon(g, [H, kn, hem], kb, kf, pc, sheen=0.8, edge=True)
+            fig.line(g, catmull([H, kn, hem], 3), C("#FFFFFF", x_m, depth), 0.9, taper=False)
         elif bottom == "shorts_sambo":
             fig.m("cloth")
-            fig.tube(g, H, _lerp2(H, kn, 0.5), th0 + 2.0, th0 + 1.2, C(lk["shorts"], x_m, depth), sheen=0.7, edge=True)
+            e = _lerp2(H, kn, 0.5)
+            fig.ribbon(g, [H, _lerp2(H, e, 0.5), e], [(0, th0 + 2.2), (1, th0 + 1.4)], [(0, th0 + 1.8), (1, th0 + 1.2)],
+                       C(lk["shorts"], x_m, depth), sheen=0.7, edge=True)
         elif bottom == "shorts_thai":
             sc_ = C(cloth, x_m, depth)
             fig.m("satin")
-            fig.tube(g, H, _lerp2(H, kn, 0.5), th0 + 1.6, th0 + 2.2, sc_, sheen=3.0, edge=True)
-            fig.line(g, [_lerp2(H, kn, 0.1), _lerp2(H, kn, 0.5)], C(lk["accent"], x_m, depth), 0.5)
+            e = _lerp2(H, kn, 0.5)
+            fig.ribbon(g, [H, _lerp2(H, e, 0.5), e], [(0, th0 + 1.8), (1, th0 + 2.4)], [(0, th0 + 1.4), (1, th0 + 2.1)], sc_, sheen=3.0, edge=True)
+            fig.line(g, [_lerp2(H, kn, 0.1), _lerp2(H, kn, 0.3), _lerp2(H, kn, 0.5)], C(lk["accent"], x_m, depth), 0.5)
         elif bottom == "singlet":
             fig.m("satin")
-            fig.tube(g, H, _lerp2(H, kn, 0.32), th0 + 0.7, th0 + 0.3, C(cloth, x_m, depth), sheen=1.8, edge=True)
+            e = _lerp2(H, kn, 0.32)
+            fig.ribbon(g, [H, _lerp2(H, e, 0.5), e], [(0, th0 + 0.7), (1, th0 + 0.3)], [(0, th0 + 0.6), (1, th0 + 0.3)],
+                       C(cloth, x_m, depth), sheen=1.8, edge=True)
             fig.m("leather")
-            fig.circle(g, kn, ca0 + 1.6, C("#1C1C1F", x_m, depth), sheen=1.0)       # rodillera de neopreno
-        # extras de las piernas
-        if "prajied" in lk["extras"] and False:
-            pass
+            pad = [_lerp2(kn, H, 0.12), kn, _lerp2(kn, ankle, 0.12)]
+            fig.ribbon(g, pad, [(0, ca0 + 1.3), (0.5, ca0 + 1.9), (1, ca0 + 1.3)], [(0, ca0 + 1.6), (0.5, ca0 + 2.3), (1, ca0 + 1.6)],
+                       C("#1C1C1F", x_m, depth), sheen=1.0)       # rodillera de neopreno
 
     # ── torso (piel) ─────────────────────────────────────────────────────────
     top = lk["top"]
     tx = (wf(0.5) - wb(0.5)) * 0.5
     sk_t = C(skin, tx)
     fig.m("skin")
-    fig.poly(2, torso(front, back), sk_t, sheen=skin_sheen)
+    fig.poly(2, torso(front, back), sk_t, sheen=skin_sheen, smooth=2)
     ex = lk["extras"]
     if top == "none":
         dk = shade(sk_t, 0.78)
@@ -579,7 +889,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         jc = C(cloth, tx)
         F = [S(t, w) for t, w in zip(ts, fr)]
         K = [S(t, -w) for t, w in zip(ts, bk)]
-        fig.poly(4, F + K[::-1], jc, sheen=0.5, edge=True)
+        fig.poly(4, F + K[::-1], jc, sheen=0.5, edge=True, smooth=2)
         # pliegues de la tela
         fig.m("cloth", True)
         fd_ = shade(jc, 0.8)
@@ -723,15 +1033,17 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             legs.append((side, convex_hull(pts), ank))
         for side, hull, ank in legs:
             shade_k = 0.82 if side == "l" else 1.0
-            fig.poly(4, hull, shade(hc, shade_k), sheen=0.4, edge=True)
+            fig.poly(4, hull, shade(hc, shade_k), sheen=0.4, edge=True, smooth=2)
             # pliegues: líneas de la cintura al bajo de cada pernera
             fig.m("cloth", True)
             hem = sorted(hull, key=lambda q: -((q[0] - H[0]) ** 2 + (q[1] - H[1]) ** 2))[:2]
             if len(hem) == 2:
                 for i in range(4):
                     u = (i + 0.5) / 4
+                    hcx = sum(q[0] for q in hull) / len(hull)
+                    hcy = sum(q[1] for q in hull) / len(hull)
                     fig.line(4, [S(0.2, wf(0.2) * (1 - 2 * u) - (wb(0.2) * (2 * u - 1) if u > 0.5 else 0)),
-                                 _lerp2(hem[0], hem[1], u)], shade(hc, 1.7), 0.35)
+                                 _lerp2(_lerp2(hem[0], hem[1], 0.15 + 0.7 * u), (hcx, hcy), 0.12)], shade(hc, 1.7), 0.35)
         fig.m("cloth")
         fig.poly(4, band(0.16, 0.24, 4.8, 5.6), hc, sheen=0.6, edge=True)
         fig.poly(4, [S(0.12, -(wb(0.12) + 6)), S(0.3, -(wb(0.3) + 4.5)), S(0.3, -(wb(0.3) + 1)), S(0.12, -(wb(0.12) + 2))],
@@ -757,12 +1069,14 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     if hair == "coleta":
         # coleta alta: sale de la coronilla, cae por su peso y sigue cada giro con retardo
         lift = clamp(-vy * 0.03, -0.3, 0.6)
-        pts_ = [HP(-0.72, -0.84), HP(-1.18 - sw_h * 0.8, -0.82 - lift * 0.4), HP(-1.42 - sw_h * 1.8, -0.2 - lift),
-                HP(-1.42 - sw_h * 2.8, 0.6 - lift * 0.8), HP(-1.3 - sw_h * 3.6, 1.35 - lift * 0.5)]
-        radii = [0.2, 0.27, 0.25, 0.17, 0.05]
-        for i in range(4):
-            fig.tube(5, pts_[i], pts_[i + 1], radii[i] * R, radii[i + 1] * R, hair_c, sheen=1.6)
-        fig.line(5, [pts_[1], pts_[2], pts_[3]], shade(hair_c, 1.5), 0.04 * R)
+        b0 = HP(-0.72, -0.84)
+        mid = HP(-1.45 - sw_h * 1.8, -0.25 - lift)
+        tip = HP(-1.32 - sw_h * 3.6, 1.4 - lift * 0.5)
+        fig.poly(5, lock_pts(b0, mid, tip, 0.5 * R), hair_c, sheen=1.6, smooth=0)
+        fig.poly(5, lock_pts(b0, HP(-1.3 - sw_h * 1.5, -0.1 - lift), HP(-1.12 - sw_h * 3.0, 1.1 - lift * 0.5), 0.22 * R), hair_c, sheen=1.6, smooth=0)
+        fig.m("hair", True)
+        fig.line(5, [HP(-1.0, -0.7), HP(-1.4 - sw_h * 1.8, -0.1 - lift), HP(-1.35 - sw_h * 3.0, 0.9)], shade(hair_c, 1.5), 0.04 * R)
+        fig.m("hair")
     if hair == "trenza":
         prev = HP(-0.9, -0.2)
         for i in range(7):
@@ -791,38 +1105,53 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
 
     fig.m("eye")
     expr = _expression(f, lk)
-    dark = (24, 16, 14)
-    # ojo
-    if expr in ("dolor",):
-        fig.line(5, [HP(0.5, -0.12), HP(0.7, -0.08)], dark, 0.06 * R)
+    dark = (22, 14, 12)
+    iris = hex2rgb(lk.get("eyes", "#3A2618"))
+    # ojo: párpado superior entintado y grueso, iris con brillo, línea inferior fina
+    if expr == "dolor":
+        fig.line(5, [HP(0.46, -0.12), HP(0.6, -0.08), HP(0.74, -0.12)], dark, 0.06 * R)
+        fig.line(5, [HP(0.5, -0.04), HP(0.62, -0.02), HP(0.72, -0.05)], shade(face_c, 0.7), 0.03 * R)
     else:
-        eye = [HP(0.48, -0.1), HP(0.6, -0.17), HP(0.72, -0.1), HP(0.6, -0.04)]
-        fig.poly(5, eye, (232, 226, 214), outline=False, shade_=False)
-        fig.dot(5, HP(0.64, -0.1), 0.06 * R, dark)
-        fig.line(5, [HP(0.47, -0.11), HP(0.6, -0.18), HP(0.73, -0.11)], dark, 0.04 * R)
-    # ceja
+        open_ = 1.15 if expr == "grito" else 1.0
+        eye = [HP(0.47, -0.11), HP(0.58, -0.18 * open_), HP(0.72, -0.13), HP(0.75, -0.08), HP(0.6, -0.04)]
+        fig.poly(5, eye, (236, 232, 222), outline=False, shade_=False, smooth=1)
+        fig.dot(5, HP(0.65, -0.1), 0.068 * R, iris)
+        fig.dot(5, HP(0.665, -0.1), 0.036 * R, dark)
+        fig.dot(5, HP(0.635, -0.125), 0.02 * R, (255, 255, 250))
+        fig.line(5, [HP(0.45, -0.1), HP(0.57, -0.19 * open_), HP(0.7, -0.15), HP(0.79, -0.1)], dark, 0.075 * R)
+        fig.line(5, [HP(0.52, -0.04), HP(0.64, -0.025), HP(0.73, -0.06)], shade(face_c, 0.72), 0.022 * R)
+    # ceja de pincel
     fig.m("hair")
-    bw = 0.05 * R * lk["brow"]
+    bw = 0.075 * R * lk["brow"]
     if expr in ("grito", "esfuerzo") or lk["expression"] == "feroz":
-        brow = [HP(0.42, -0.34), HP(0.6, -0.31), HP(0.8, -0.22)]
+        brow = [HP(0.4, -0.33), HP(0.6, -0.3), HP(0.8, -0.2)]
     elif expr == "dolor":
-        brow = [HP(0.42, -0.28), HP(0.62, -0.34), HP(0.8, -0.3)]
+        brow = [HP(0.4, -0.27), HP(0.62, -0.35), HP(0.8, -0.31)]
     else:
-        brow = [HP(0.42, -0.31), HP(0.62, -0.34), HP(0.8, -0.28)]
-    fig.line(5, brow, shade(hair_c, 0.9) if hair not in ("mono",) else (200, 200, 196), bw)
-    # boca
+        brow = [HP(0.4, -0.3), HP(0.62, -0.35), HP(0.82, -0.28)]
+    fig.line(5, brow, shade(hair_c, 0.85) if hair not in ("mono",) else (205, 205, 200), bw)
+    # nariz: aleta y sombra bajo la punta
+    fig.m("skin", True)
+    fig.line(5, [HP(0.86, 0.22), HP(0.93, 0.29), HP(1.0, 0.28)], shade(face_c, 0.68), 0.035 * R)
+    fig.line(5, [HP(0.83, -0.02), HP(0.9, 0.12)], shade(face_c, 0.82), 0.025 * R)
+    # pómulo y rubor
     fig.m("skin")
-    lip = shade(face_c, 0.62)
+    fig.dot(5, HP(0.55, 0.2), 0.15 * R, mixc(face_c, (215, 110, 100), 0.16 + 0.3 * getattr(f, "breath", 0.0)))
+    # boca
+    lip = shade(face_c, 0.6)
     if expr in ("grito", "dolor", "jadeo"):
-        o = 0.12 if expr == "grito" else 0.07
-        mouth = [HP(0.72, 0.46), HP(0.92, 0.44), HP(0.9, 0.5 + o), HP(0.74, 0.52 + o * 0.8)]
-        fig.poly(5, mouth, (70, 28, 26), outline=False, shade_=False)
+        o = 0.13 if expr == "grito" else 0.07
+        mouth = [HP(0.71, 0.46), HP(0.92, 0.44), HP(0.9, 0.5 + o), HP(0.8, 0.54 + o), HP(0.73, 0.52 + o * 0.8)]
+        fig.poly(5, mouth, (72, 26, 26), outline=False, shade_=False, smooth=1)
         if expr == "grito":
-            fig.line(5, [HP(0.74, 0.47), HP(0.9, 0.45)], (236, 230, 220), 0.03 * R)
+            fig.line(5, [HP(0.74, 0.47), HP(0.9, 0.45)], (238, 232, 222), 0.035 * R, taper=False)
+            fig.dot(5, HP(0.8, 0.52 + o), 0.04 * R, (150, 60, 60))
     elif expr == "sonrisa":
-        fig.line(5, [HP(0.66, 0.44), HP(0.76, 0.5), HP(0.92, 0.48)], lip, 0.045 * R)
+        fig.line(5, [HP(0.64, 0.42), HP(0.76, 0.5), HP(0.93, 0.47)], lip, 0.05 * R)
+        fig.dot(5, HP(0.82, 0.55), 0.03 * R, shade(face_c, 1.08))
     else:
-        fig.line(5, [HP(0.7, 0.5), HP(0.92, 0.48)], lip, 0.04 * R)
+        fig.line(5, [HP(0.68, 0.49), HP(0.8, 0.5), HP(0.93, 0.47)], lip, 0.045 * R)
+        fig.dot(5, HP(0.82, 0.56), 0.03 * R, shade(face_c, 1.08))
     # pelo
     fig.m("hair")
     def arc(r, a0, a1, step=10):
@@ -874,6 +1203,38 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             ln = 0.55 + 0.25 * ((i * 7) % 3) / 2
             tip = HP(-0.08 + (0.98 + ln) * dx - sw_h * (1 + i * 0.1), -0.05 + (0.98 + ln) * dy + 0.45)
             fig.tube(5, base, tip, 0.13 * R, 0.1 * R, hair_c, sheen=0.9)
+    # mechones: el pelo deja de ser un casco y tiene forma
+    fig.m("hair")
+
+    def lock(a_deg, r0, length, bend, w, down=0.0):
+        a = math.radians(a_deg)
+        b = math.radians(a_deg + bend)
+        base = HP(-0.08 + r0 * math.cos(a), -0.05 + r0 * math.sin(a))
+        ctrl = HP(-0.08 + (r0 + length * 0.55) * math.cos((a + b) * 0.5), -0.05 + (r0 + length * 0.55) * math.sin((a + b) * 0.5) + down * 0.5)
+        tip = HP(-0.08 + (r0 + length) * math.cos(b) - sw_h * 0.6, -0.05 + (r0 + length) * math.sin(b) + down)
+        fig.poly(5, lock_pts(base, ctrl, tip, w * R), hair_c, sheen=1.2, smooth=0)
+
+    if hair == "corto":
+        for a_deg, ln, bend in ((-78, 0.32, -22), (-100, 0.36, -24), (-124, 0.34, -26), (-150, 0.3, -24), (-176, 0.26, -20)):
+            lock(a_deg, 0.98, ln, bend, 0.42)
+        fig.poly(5, lock_pts(HP(0.3, -0.92), HP(0.58, -0.86), HP(0.72, -0.64), 0.32 * R), hair_c, sheen=1.2, smooth=0)
+    elif hair in ("trenza", "trenza_nuca", "coleta"):
+        # mechones sueltos en la sien y el flequillo
+        fig.poly(5, lock_pts(HP(0.38, -0.86), HP(0.62, -0.7), HP(0.64, -0.42), 0.2 * R), hair_c, sheen=1.2, smooth=0)
+        fig.poly(5, lock_pts(HP(0.1, -0.8), HP(0.18, -0.4), HP(0.12 - sw_h, -0.02), 0.14 * R), hair_c, sheen=1.2, smooth=0)
+    elif hair == "melena":
+        for x0, x1 in ((-1.02, -1.08), (-0.82, -0.86), (-0.6, -0.62)):
+            fig.poly(5, lock_pts(HP(x0, 0.5), HP(x0 - 0.02, 0.7), HP(x1 - sw_h * 0.4, 0.98), 0.24 * R), hair_c, sheen=1.4, smooth=0)
+        for x0 in (0.5, 0.64):
+            fig.poly(5, lock_pts(HP(x0, -0.8), HP(x0 + 0.08, -0.55), HP(x0 + 0.1, -0.34), 0.16 * R), hair_c, sheen=1.4, smooth=0)
+    elif hair == "mono":
+        for a_deg in (-120, -150, -178):
+            lock(a_deg, 1.0, 0.18, -14, 0.22)
+    if hair not in ("rapado",):
+        # banda de brillo del pelo (en la GPU la pone la luz; en CPU se pinta)
+        fig.m("hair", True)
+        fig.line(5, [HP(-0.5, -0.82), HP(-0.1, -1.0), HP(0.3, -0.92)], shade(hair_c, 1.6), 0.05 * R)
+
     # rasgos
     fig.m("skin")
     if "cicatriz" in ex:
@@ -934,58 +1295,103 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     sleeve = lk.get("sleeve", 0.0) if top in ("gi", "kurtka", "changshan", "keikogi") else 0.0
     open_hand = (f.state == Fighter.THROWING or (f.state == Fighter.ATTACK and f.move is not None and f.move.anim == "grab")
                  or (lk.get("guard_open") and f.state in (Fighter.IDLE, Fighter.WALK, Fighter.INTRO)))
+    def arm_keys(L1, L2):
+        """Deltoides, tríceps detrás, bíceps delante, codo, masa del antebrazo y muñeca fina."""
+        ue = L1 / max(1e-6, L1 + L2)
+        back = [(0.0, up0 * 1.05), (ue * 0.45, up0 * 0.92 + upb * 0.6), (ue * 0.9, up1 * 1.05), (ue, up1 * 0.95),
+                (ue + (1 - ue) * 0.25, fo0 + fob * 0.5), (1.0, fo1)]
+        front = [(0.0, up0), (ue * 0.5, up0 * 0.9 + upb), (ue * 0.9, up1), (ue, up1 * 0.92),
+                 (ue + (1 - ue) * 0.22, fo0 * 1.05 + fob), (1.0, fo1)]
+        return back, front
+
+    def with_delt(keys_l, keys_r, D0, sh, rest, r0):
+        """Antepone el tramo del deltoides (de dentro del hombro a la articulación) a un perfil de brazo."""
+        Ld = dist(D0, sh)
+        tot = max(1e-6, Ld + rest)
+        f_ = lambda ks: [(0.0, r0)] + [((Ld + u * rest) / tot, v) for u, v in ks]
+        return f_(keys_l), f_(keys_r)
+
+    def hand_frame(el, hd):
+        fx_, fy_ = _norm(hd[0] - el[0], hd[1] - el[1])
+        if fx_ == 0 and fy_ == 0:
+            fx_ = 1.0
+        px_, py_ = -fy_, fx_
+        return lambda a, b: (hd[0] + fx_ * a + px_ * b, hd[1] + fy_ * a + py_ * b)
+
     for side, g, depth in (("l", 0, 0.84), ("r", 6, 1.0)):
         sh, el, hd = J["sh_" + side], J["el_" + side], J["hd_" + side]
         fig.m("skin")
         sk = C(skin, el[0], depth)
         fore_sk = mixc(sk, (205, 80, 70), min(0.4, 0.4 * red)) if not mono else sk
+        L1, L2 = dist(sh, el), dist(el, hd)
         if sleeve > 0:
             slc = C(cloth, el[0], depth)
-            fig.tube(g, el, hd, fo0, fo1, fore_sk, bulge=fob, bt=0.25, sheen=skin_sheen)
+            fig.ribbon(g, [el, _lerp2(el, hd, 0.5), hd], [(0, fo0 + fob * 0.5), (0.3, fo0 + fob * 0.6), (1, fo1)],
+                       [(0, fo0), (0.3, fo0 + fob), (1, fo1)], fore_sk, sheen=skin_sheen)
             fig.m("cloth")
-            fig.circle(g, sh, B["delt"] + 2.0, slc, sheen=0.5)
-            fig.tube(g, sh, el, up0 + 2.6, up1 + 2.8, slc, sheen=0.5, edge=True)
             cut = _lerp2(el, hd, sleeve)
             wide = 3.6 if top != "changshan" else 1.6
-            fig.tube(g, el, cut, up1 + 2.7, fo1 + wide, slc, sheen=0.5, edge=True)
+            ue = L1 / max(1e-6, L1 + dist(el, cut))
+            D0 = _lerp2(sh, N, 0.16)
+            kl_, kr_ = with_delt([(0, B["delt"] + 2.0), (ue * 0.6, up0 + 2.2), (ue, up1 + 3.2), (1, fo1 + wide)],
+                                 [(0, B["delt"] + 1.6), (ue * 0.6, up0 + 2.6), (ue, up1 + 2.6), (1, fo1 + wide - 0.4)],
+                                 D0, sh, L1 + dist(el, cut), B["delt"] + 1.0)
+            fig.ribbon(g, [D0, sh, el, cut], kl_, kr_, slc, sheen=0.5, edge=True)
             fig.m("cloth", True)
-            fig.line(g, [_lerp2(sh, el, 0.55), _lerp2(el, cut, 0.3)], shade(slc, 0.78), 0.4)
+            # pliegues de la manga: en zigzag junto al codo, como tela que se recoge
+            fig.line(g, [_lerp2(sh, el, 0.5), _lerp2(sh, el, 0.82), _lerp2(el, cut, 0.12)], shade(slc, 0.78), 0.45)
+            fig.line(g, [_lerp2(el, cut, 0.25), _lerp2(el, cut, 0.4)], shade(slc, 0.8), 0.4)
+            fig.line(g, [_lerp2(sh, el, 0.2), _lerp2(sh, el, 0.38)], shade(slc, 0.82), 0.35)
             if top == "changshan":
-                fig.line(g, [_lerp2(el, cut, 0.92), cut], C(lk["accent"], el[0], depth), 0.5)
+                fig.m("cloth")
+                fig.line(g, [_lerp2(el, cut, 0.9), cut], C(lk["accent"], el[0], depth), 0.5)
         else:
             fig.m("skin")
-            dc = sk
-            fig.circle(g, sh, B["delt"], dc, sheen=skin_sheen)
-            fig.tube(g, sh, el, up0, up1, sk, bulge=upb, bt=0.5, side=1, sheen=skin_sheen)
-            fig.tube(g, el, hd, fo0, fo1, fore_sk, bulge=fob, bt=0.25, side=-1, sheen=skin_sheen)
-            if "definido" in ex or lk["body"] in ("atleta", "pesado"):
+            kb, kf = arm_keys(L1, L2)
+            kb[0] = (0.0, B["delt"] * 1.02)
+            kf[0] = (0.0, B["delt"] * 0.92)
+            D0 = _lerp2(sh, N, 0.16)
+            kb, kf = with_delt(kb, kf, D0, sh, L1 + L2, B["delt"] * 0.8)
+            fig.ribbon(g, [D0, sh, el, hd], kb, kf, fore_sk if red > 0.15 else sk, sheen=skin_sheen)
+            if "definido" in ex or lk["body"] in ("atleta", "pesado", "fibroso"):
                 fig.m("skin", True)
-                fig.line(g, [_lerp2(sh, el, 0.2), _lerp2(sh, el, 0.62)], shade(sk, 0.82), 0.3)
+                fig.line(g, [_lerp2(sh, el, 0.15), _lerp2(sh, el, 0.4), _lerp2(sh, el, 0.62)], shade(sk, 0.82), 0.32)
+                fig.line(g, [_lerp2(el, hd, 0.12), _lerp2(el, hd, 0.42)], shade(sk, 0.84), 0.28)
         if "prajied" in ex:
             fig.m("cloth")
             c1, c2 = lk["band"]
             pa = _lerp2(sh, el, 0.3)
             pb = _lerp2(sh, el, 0.42)
             fig.tube(g, pa, pb, up0 + 0.9, up0 + 0.8, C(c1, el[0], depth), sheen=0.8)
-            fig.line(g, [_lerp2(pa, pb, 0.5), (pa[0] - 4 - vxl, pa[1] + 9)], C(c2, el[0], depth), 0.8)
+            fig.line(g, [_lerp2(pa, pb, 0.5), (pa[0] - 2 - vxl, pa[1] + 5), (pa[0] - 4 - vxl * 1.5, pa[1] + 10)], C(c2, el[0], depth), 0.8)
         # mano
+        HF = hand_frame(el, hd)
+        hs = B["hand"] / 4.3
         if "guantes" in ex:
             fig.m("leather")
             gc = C("#1A1A1A", hd[0], depth)
-            fig.circle(g, hd, B["hand"] * 1.45, gc, sheen=2.4)
-            fig.line(g, [_lerp2(el, hd, 0.78), _lerp2(el, hd, 0.86)], C("#3A3A3A", hd[0], depth), 2.2)
+            glove = [HF((a - 3) * hs * 1.35, b * hs * 1.35) for a, b in ((-2, -4.2), (3.5, -5.0), (8.2, -3.6), (9, 0), (8.2, 3.8), (3, 4.8), (-2, 4.0))]
+            fig.poly(g, glove, gc, sheen=2.4, smooth=2)
+            fig.line(g, [HF(-5.8 * hs, -4.4 * hs), HF(-5.8 * hs, 4.4 * hs)], C("#3A3A3A", hd[0], depth), 1.6, taper=False)
+            fig.m("leather", True)
+            fig.line(g, [HF(6.0 * hs, -3.0 * hs), HF(7.4 * hs, 0), HF(6.0 * hs, 3.0 * hs)], shade(gc, 1.6), 0.3)
         elif open_hand:
             fig.m("skin")
-            dx_, dy_ = _norm(hd[0] - el[0], hd[1] - el[1])
-            tip = (hd[0] + dx_ * 7, hd[1] + dy_ * 7)
-            fig.tube(g, hd, tip, B["hand"] * 0.85, B["hand"] * 0.6, fore_sk, sheen=skin_sheen)
-            fig.line(g, [hd, (hd[0] - dy_ * 3 + dx_ * 3, hd[1] + dx_ * 3 + dy_ * 3)], shade(fore_sk, 0.75), 0.5)
+            palm = [HF(a * hs, b * hs) for a, b in ((-2, -3.2), (4, -3.6), (10, -2.6), (11.2, -0.5), (10.2, 1.6), (4, 3.1), (-2, 3.0))]
+            fig.poly(g, palm, fore_sk, sheen=skin_sheen, smooth=2)
+            fig.m("skin", True)
+            for b in (-1.6, -0.1, 1.3):
+                fig.line(g, [HF(5.8 * hs, b * hs), HF(10.2 * hs, b * hs * 0.9)], shade(fore_sk, 0.75), 0.28)
+            fig.m("skin")
+            fig.line(g, [HF(1.0 * hs, -3.2 * hs), HF(4.0 * hs, -5.0 * hs), HF(6.2 * hs, -5.2 * hs)], fore_sk, 1.5 * hs, taper=False)
         else:
             fig.m("skin")
-            fig.circle(g, hd, B["hand"], fore_sk, sheen=skin_sheen)
+            fist = [HF((a - 3) * hs, b * hs) for a, b in ((-1.5, -3.6), (3.5, -4.4), (7.5, -3.2), (8.4, 0), (7.5, 3.4), (3, 4.2), (-1.5, 3.6))]
+            fig.poly(g, fist, fore_sk, sheen=skin_sheen, smooth=2)
             fig.m("skin", True)
-            fig.line(g, [(hd[0] + B["hand"] * 0.3, hd[1] - B["hand"] * 0.7), (hd[0] + B["hand"] * 0.7, hd[1] + B["hand"] * 0.3)],
-                     shade(fore_sk, 0.7), 0.3)
+            for b in (-2.2, -0.4, 1.4):
+                fig.line(g, [HF(3.4 * hs, b * hs), HF(5.0 * hs, (b + 0.8) * hs)], shade(fore_sk, 0.72), 0.28)   # dedos
+            fig.line(g, [HF(-1.0 * hs, -3.0 * hs), HF(1.8 * hs, -2.0 * hs), HF(3.6 * hs, -0.6 * hs)], shade(fore_sk, 0.75), 0.35)  # pulgar
         if "manchas" in ex:
             fig.dot(g, (hd[0] - 1, hd[1] - 1), 0.5, shade(fore_sk, 0.8))
     return fig
@@ -1020,7 +1426,8 @@ def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, 
             return ((maxx - p[0]) * k, (p[1] - miny) * k)
         rx = maxx * k
     ry = -miny * k
-    _render(fig, canvas, T, k, ow_px * ss, outline, flat=flat, ss=ss, fac=fac, baked=not maps)
+    shared: dict = {}
+    _render(fig, canvas, T, k, ow_px * ss, outline, flat=flat, ss=ss, fac=fac, baked=not maps, cache=shared)
     size = (max(1, int(w / ss)), max(1, int(h / ss))) if ss > 1 else (w, h)
     data = None
     if maps:
@@ -1033,7 +1440,7 @@ def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, 
         else:
             def T1(p):
                 return ((maxx - p[0]) * k1, (p[1] - miny) * k1)
-        _render_data(fig, data, T1, k1, ow_px, fac=fac)
+        _render_data(fig, data, T1, k1, ow_px, fac=fac, shared=shared, inv=1.0 / ss)
     if ss > 1:
         canvas = pygame.transform.smoothscale(canvas, size)
         rx, ry = rx / ss, ry / ss
