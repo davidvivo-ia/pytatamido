@@ -1,0 +1,13 @@
+[project]
+name = "tatamido"
+version = "0.2.0"
+description = "TATAMI: DŌ — juego de lucha 2.5D procedimental en pygame"
+requires-python = ">=3.10"
+dependencies = ["pygame-ce>=2.5", "numpy>=1.24"]
+license = { text = "MIT" }
+
+[project.scripts]
+tatamydo = "tatamido.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
