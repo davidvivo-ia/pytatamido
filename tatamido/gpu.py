@@ -473,7 +473,34 @@ vec3 hue_(vec3 c) { return c / max(max(c.r, c.g), max(c.b, 1e-3)); }
 vec3 litFighter(vec2 p, vec4 fg) {
     vec3 alb = toLin(fg.rgb);
     int id = int(texelFetch(tFigD, ivec2(p), 0).g * 255. + 0.5);
-    if (id == 0) return alb * uTint;                       // tinta: el contorno no se ilumina
+    if (id == 0) {
+        // tinta de color: la línea toma el tono oscuro de la pieza que bordea (no negro plano) y, en la
+        // silueta que mira a la llave, la luz se la come (línea rota, como el entintado a pincel)
+        vec3 acc = vec3(0.);
+        float n = 0.;
+        vec2 outd = vec2(0.);
+        float r = 2.2 * uRS;
+        for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398;
+            vec2 dir = vec2(cos(a), sin(a));
+            ivec2 ip = ivec2(clamp(p + dir * r, vec2(0.), uRes - 1.));
+            int nid = int(texelFetch(tFigD, ip, 0).g * 255. + 0.5);
+            vec4 nf = texelFetch(tFig, ip, 0);
+            if (nid > 0) { acc += toLin(nf.rgb); n += 1.; }
+            else if (nf.a < 0.1) outd += dir;
+        }
+        vec3 ink = alb;
+        if (n > 0.5) {
+            vec3 nc = acc / n;
+            ink = mix(alb, hue_(nc) * (0.012 + 0.035 * luma(nc)), 0.55);
+            if (dot(outd, outd) > 0.5) {
+                vec2 d = normalize(outd);
+                float k = smoothstep(0.55, 0.92, dot(normalize(vec3(d.x, -d.y, 0.35)), normalize(uKey3)));
+                ink = mix(ink, nc * (uKey * 0.5 + uSky * 0.2), 0.7 * k);
+            }
+        }
+        return ink * uTint;
+    }
     vec4 fd = Lp(tFigD, p);
     vec4 P0 = texelFetch(tPieces, ivec2(id, 0), 0);
     vec4 P1 = texelFetch(tPieces, ivec2(id, 1), 0);
