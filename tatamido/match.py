@@ -229,6 +229,9 @@ class Match:
             return
 
         if self.state == Match.ROUND_END:
+            # la pared del asalto siguiente se hornea y se sube a la GPU ahora, un trozo por fotograma
+            if self.state_t > 20:
+                self.dojo.prebake(LIGHT_RIGS[min(self.round + 1, 4)])
             for f in self.f:
                 f.anim_t += 1 / 60
                 if f.state == Fighter.KNOCK and f.y < 0:

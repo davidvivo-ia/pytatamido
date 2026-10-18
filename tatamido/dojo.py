@@ -166,6 +166,7 @@ class Dojo:
         for yy in (wall_top + 5 * k, floor_back - 9 * k):
             R((0, int(yy), Wd, lw(6.5)), shade(wall_c, 0.7), "wood")
         # --- shōji (pared norte) ---
+        pine_at = None
         panel_w = 110 * k
         for i in range(12):
             if i in (5, 6):
@@ -180,13 +181,27 @@ class Dojo:
                 if getattr(self, "_branch_key", None) != bkey:
                     self._branch, self._branch_key = self._pine_shadow(int(1320 * k), rect.h, k), bkey
                 ox = int(x0)
-                surf.blit(self._branch, (rect.x, rect.y), area=pygame.Rect(rect.x - ox - int(sway), 0, rect.w, rect.h))
+                if mat is None:
+                    surf.blit(self._branch, (rect.x, rect.y), area=pygame.Rect(rect.x - ox - int(sway), 0, rect.w, rect.h))
+                else:
+                    pine_at = (ox, rect.y)          # en la lámina va aparte: la GPU la mece con el viento
             # celosía (kumiko)
             for q in range(1, 4):
                 Ln(frame_c, "wood", (rect.x + rect.w * q / 4, rect.y), (rect.x + rect.w * q / 4, rect.bottom), lw(1.8))
             for q in range(1, 6):
                 Ln(frame_c, "wood", (rect.x, rect.y + rect.h * q / 6), (rect.right, rect.y + rect.h * q / 6), lw(1.8))
             R(rect, frame_c, "wood", lw(3.6))
+        if pine_at is not None and np is not None:
+            # canal alfa de la máscara: 255 sin sombra; la sombra del pino resta (el shader la desplaza con el viento)
+            br = pygame.surfarray.pixels_alpha(self._branch)
+            ma = pygame.surfarray.pixels_alpha(mat)
+            x_, y_ = pine_at
+            w_, h_ = br.shape
+            xa, ya = max(0, x_), max(0, y_)
+            xb, yb = min(ma.shape[0], x_ + w_), min(ma.shape[1], y_ + h_)
+            if xb > xa and yb > ya:
+                ma[xa:xb, ya:yb] = 255 - br[xa - x_:xb - x_, ya - y_:yb - y_]
+            del br, ma
         # --- tokonoma: pergamino 道 y rama de arce ---
         tx = int(x0 + 5 * panel_w)
         trect = pygame.Rect(tx, int(wall_top + 16 * k), int(panel_w * 2 - 5.5 * k), int(floor_back - wall_top - 36 * k))
@@ -267,27 +282,64 @@ class Dojo:
                 r["lanterns"] > 0.05, r["lanterns"] < 0.6, RS)
 
     def _bake(self, rig, fonts):
+        plate = None
+        for plate in self._bake_steps(rig, fonts, strips=1):
+            pass
+        return plate
+
+    def _bake_steps(self, rig, fonts, strips=4):
+        """Hornea la lámina por franjas horizontales (una por llamada a next): la de la pared se repinta con un
+        recorte distinto cada vez, así que el coste se reparte entre fotogramas. La última entrega la lámina."""
         u0, u1 = self.PLATE_U
         v0, v1 = self.PLATE_V
         # densidad: la del juego a 1440p basta (el shader pone el detalle fino); los carteles en 4K, más
         s = min(1.6 * RS, 2.4 if RS < 2.5 else 3.6)
         size = (int((u1 - u0) * s), int((v1 - v0) * s))
         col = pygame.Surface(size)
-        mat = pygame.Surface(size)
-        mat.fill((0, 0, 0))
-        self._draw_wall(col, -u0 * s, -v0 * s, (230 - v0) * s, s, fonts, mat=mat, rig=rig)
+        mat = pygame.Surface(size, pygame.SRCALPHA)
+        mat.fill((0, 0, 0, 255))
+        hs = -(-size[1] // strips)
+        for i in range(strips):
+            clip = pygame.Rect(0, i * hs, size[0], hs)
+            col.set_clip(clip)
+            mat.set_clip(clip)
+            self._draw_wall(col, -u0 * s, -v0 * s, (230 - v0) * s, s, fonts, mat=mat, rig=rig)
+            if i < strips - 1:
+                yield None
+        col.set_clip(None)
+        mat.set_clip(None)
         self._plate_v = getattr(self, "_plate_v", 0) + 1
-        return dict(col=col, mat=mat, rect=(u0, v0, u1 - u0, v1 - v0), version=(id(self), self._plate_v),
-                    key=self.plate_key(rig))
+        yield dict(col=col, mat=mat, rect=(u0, v0, u1 - u0, v1 - v0), version=(id(self), self._plate_v),
+                   key=self.plate_key(rig))
+
+    def prebake(self, rig):
+        """Prepara, un trozo por fotograma, la lámina de la próxima luz (entre asaltos: sin parón al cambiar)."""
+        fonts = getattr(self, "_fonts", None)
+        if fonts is None or getattr(self, "plate", None) is None:
+            return
+        key = self.plate_key(rig)
+        if self.plate["key"] == key or (getattr(self, "plate_next", None) or {}).get("key") == key:
+            return
+        if getattr(self, "_pre_key", None) != key:
+            self._pre_gen, self._pre_key = self._bake_steps(dict(rig), fonts), key
+        try:
+            res = next(self._pre_gen)
+        except StopIteration:
+            res = None
+        if res is not None:
+            self.plate_next, self._pre_key = res, None
 
     def ensure_plate(self, fonts):
         """Lámina de pared a alta resolución para la GPU. Se hornea una sola vez por luz de asalto, con
         la luz de destino; durante el cambio de asalto el shader funde la anterior con la nueva al mismo
         ritmo al que se interpola la luz (sin rehornear cada fotograma)."""
+        self._fonts = fonts
         key = self.plate_key(self.target_rig)
         cur = getattr(self, "plate", None)
         if cur is None or cur["key"] != key:
-            new = self._bake(self.target_rig, fonts)
+            nxt = getattr(self, "plate_next", None)
+            new = nxt if nxt is not None and nxt["key"] == key else self._bake(self.target_rig, fonts)
+            self.plate_next = None
             self.plate_from = cur
             self.plate_mix = 1.0 if cur is None or self.plate_key(self.rig) == key else 0.0
             self.plate = new

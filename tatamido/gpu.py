@@ -69,6 +69,7 @@ float luma(vec3 c) { return dot(c, vec3(.2126, .7152, .0722)); }
 SCENE = COMMON + """
 uniform sampler2D tBg, tFig, tFx, tFigD, tPlate, tPlateM, tPlate2;
 uniform float uPlateMix;      // fundido de la lámina anterior (cambio de asalto) a la actual
+uniform float uPineSway;      // viento: desplazamiento de la sombra del pino (unidades de pared)
 uniform vec4 uWall;           // pared → pantalla: x0, y del borde superior, px por unidad, y del zócalo
 uniform vec4 uPlate;          // lámina: u mínima, v mínima, ancho y alto en unidades de pared
 uniform float uPlateOn;
@@ -512,6 +513,13 @@ vec3 litFighter(vec2 p, vec4 fg) {
         alb = mix(alb, vec3(0.34, 0.32, 0.29) * fib, wear * uTexI);
     }
     if (mat == 4) alb *= 1. + 0.45 * smoothstep(0.3, 0.62, 1. - N0.z) * uTexI;     // cuero gastado en los cantos
+    // bajo la lluvia: la tela empapada oscurece y se pega, el pelo se apelmaza; todo brilla más
+    float wetK = uWet;
+    if (wetK > 0.) {
+        if (mat == 2 || mat == 3) alb *= mix(1., 0.6, wetK);
+        else if (mat == 5) alb *= mix(1., 0.72, wetK);
+        else if (mat == 1) alb *= mix(1., 0.9, wetK);
+    }
     if (uDebugN > 0.5 && uDebugN < 1.5) return toLin(N * 0.5 + 0.5) / max(uTint, vec3(0.05));
 
     float ao = 1. - clamp((Lp(tFigD, p, 4.2 + LB()).r - fd.r) * 2.2, 0., 0.5);
@@ -572,6 +580,24 @@ vec3 litFighter(vec2 p, vec4 fg) {
         hi = band * (0.12 + 0.3 * spec) * (0.3 + 2.2 * sqrt(luma(alb)));        // en pelo negro, brillo azulado y contenido
     }
     else if (mat == 2) hi = smoothstep(0.62, 0.72, 1. - N.z) * 0.1 + (pat == 5 ? smoothstep(0.8, 0.94, nha) * 0.35 * sk : 0.);
+    float drop = 0.;
+    if (wetK > 0. && mat != 6) {
+        // película de agua: brillo especular duro en cualquier material
+        hi += wetK * smoothstep(0.92, 0.985, nh) * (mat == 1 ? 0.55 : mat == 5 ? 0.45 : 0.4);
+        // gotas que resbalan: columnas de ~2 cm, cada una con su gota cayendo a su ritmo
+        vec2 dq = vec2(p.x / (2.2 * pxcm), p.y / (11. * pxcm));
+        float colx = floor(dq.x);
+        float spd = 0.35 + 0.5 * hash12(vec2(colx, 7.3));
+        dq.y -= uTime * spd + hash12(vec2(colx, 1.9)) * 9.;
+        vec2 ci = vec2(colx, floor(dq.y));
+        vec2 cf = fract(dq);
+        float on = step(0.7, hash12(ci + seed * 0.37));
+        float x0 = 0.3 + 0.4 * hash12(ci + 3.1);
+        float head = smoothstep(0.62, 0.78, cf.y) * smoothstep(0.98, 0.84, cf.y);
+        float tail = smoothstep(0.1, 0.7, cf.y) * (1. - smoothstep(0.78, 0.84, cf.y)) * 0.35;
+        drop = on * smoothstep(0.2, 0.0, abs(cf.x - x0)) * (head + tail) * wetK * vis(2.2, pxcm);
+        hi += drop * 0.9;
+    }
     vec3 hue = alb / max(max(alb.r, alb.g), max(alb.b, 1e-3));
     vec3 hiCol = mat == 5 ? mix(vec3(0.62, 0.72, 1.0) * luma(uKey) * 1.3, uKey, clamp(luma(alb) * 3., 0., 1.))
                : mat == 3 || pat == 5 || pat == 9 ? uKey * mix(vec3(1.), hue, 0.65)          // la seda tiñe su brillo
@@ -601,6 +627,9 @@ vec3 shadeWall(vec2 p) {
     c *= uTint;
     vec3 m = texture(tPlateM, t).rgb;
     float fpx = uWall.z;
+    // sombra del pino del jardín: va en el alfa de la máscara y se mece con el viento sobre el papel
+    float pine = 1. - texture(tPlateM, t - vec2(uPineSway / uPlate.z, 0.)).a;
+    c = mix(c, c * 0.24, pine * m.r);
     if (m.r > 0.01) {                                  // washi: nubes de pulpa y fibras largas de kōzo
         float pulp = fbm(w * 0.32 + 3.1);
         float fib = 0.;
@@ -627,11 +656,13 @@ vec3 shadeWall(vec2 p) {
         c = mix(c, c * (pl - 0.06 * straw * vis(0.4, fpx)), m.b);
     }
     c *= 1. + uEmissive * smoothstep(0.3, 0.8, luma(c)) * 2.2 * (0.35 + 0.65 * m.r);      // papel a contraluz
-    // los farolillos iluminan la madera y el enlucido de alrededor
+    // los farolillos iluminan la madera y el enlucido de alrededor; su papel parpadea con la llama
     for (int i = 0; i < 4; i++) {
         vec4 l = uLanterns[i];
         if (l.w <= 0.) continue;
         vec2 d = (p - l.xy) / uWall.z;
+        float body = smoothstep(1.1, 0.85, length(d / vec2(13., 20.)));
+        c *= mix(1., 0.78 + 0.32 * l.w / max(uLanI, 1e-3), body);
         float att = l.w * 2600. / (dot(d, d) + 900.);
         c += c * uLan * att * (1. - 0.7 * m.r) * 1.6;
     }
@@ -1079,7 +1110,8 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
         light_dir=g["light_dir"], shadow=g["shadow"] if cfg.get("shadows", True) else (0, 1, 0, 0),
         lanterns=lanterns, fighters=figs, decals=decals, waves=waves, tex=float(cfg.get("tex", 1.0)),
         wall=dojo.wall_geom(cam), plate=getattr(dojo, "plate", None), plate_from=getattr(dojo, "plate_from", None),
-        plate_mix=float(getattr(dojo, "plate_mix", 1.0)),
+        plate_mix=float(getattr(dojo, "plate_mix", 1.0)), pine_sway=float(getattr(dojo, "wind", 0.0)) * 14.0,
+        plate_next=getattr(dojo, "plate_next", None),
         light_uv=g["light_uv"], rays_i=g["rays"] if cfg.get("beams", True) else 0.0, rays_col=g["rays_col"],
         exposure=g["exposure"], lift=g["lift"], gain=g["gain"], sat=g["sat"], power=g["power"],
         bloom=0.05 if cfg.get("bloom") else 0.02, ca=0.25 + (fx.ca if fx is not None else 0.0),
@@ -1350,6 +1382,7 @@ class GPURenderer:
             x0, wt, fb, bgz = p["wall"]
             S(pr, "uWall", (float(x0), float(wt), float(bgz), float(fb)))
             S(pr, "uPlate", tuple(float(v) for v in p["plate"]["rect"]))
+            S(pr, "uPineSway", float(p.get("pine_sway", 0.0)))
 
     # ----- fotograma -----
     def render(self, p: dict, bg, fig, fx, hud, dt=1 / 60, window_size=None, figd=None):
@@ -1367,6 +1400,8 @@ class GPURenderer:
         plate, pfrom = p.get("plate"), p.get("plate_from")
         cur = self._slot(plate, keep=pfrom)
         old = self._slot(pfrom, keep=plate) if pfrom is not None and p.get("plate_mix", 1.0) < 0.999 else None
+        if old is None and p.get("plate_next") is not None and cur is not None:
+            self._slot(p["plate_next"], keep=plate)            # la del asalto siguiente, subida por adelantado
         plate_on = cur is not None
         self.t_plate, self.t_platem = (cur["col"], cur["mat"]) if cur else (None, None)
         self.t_plate2 = old["col"] if old else self.t_plate
