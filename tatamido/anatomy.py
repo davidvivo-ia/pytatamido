@@ -84,3 +84,21 @@ LOOKS = {
                   extras=["barba_rala", "arrugas", "manchas"], top="keikogi", bottom="hakama", cloth="#F5F5F0",
                   collar="#ECEBE4", hakama="#101010", sleeve=0.72, feet="descalzo", expression="serena"),
 }
+
+# Público del dojo: alumnos y un maestro sentados en seiza junto a la pared.
+_BASE = dict(nose="recta", jaw=1.0, brow=1.0, extras=[], feet="descalzo", expression="neutra", sleeve=0.85)
+AUDIENCE = {
+    "alumno_judo": dict(_BASE, body="atleta", skin="#C9A07A", hair_c="#181414", hair="corto", top="gi", bottom="gi",
+                        cloth="#F2EFE6", collar="#E6DCC0", belt="#1A1A1A"),
+    "alumna_judo": dict(_BASE, body="atleta_f", skin="#E8C4A2", hair_c="#2A1C14", hair="trenza", nose="fina", top="gi",
+                        bottom="gi", cloth="#F5F3EC", collar="#E8E2D2", belt="#6B4423"),
+    "alumno_azul": dict(_BASE, body="atleta", skin="#8D5A3B", hair_c="#1A1210", hair="rizado", top="gi", bottom="gi",
+                        cloth="#2C5AA0", collar="#244C8A", belt="#5B3A8C"),
+    "maestro": dict(_BASE, body="anciano", skin="#D9B99B", hair_c="#D8D8D4", hair="mono", top="keikogi", bottom="hakama",
+                    cloth="#F5F5F0", collar="#ECEBE4", hakama="#18181C", extras=["arrugas"], sleeve=0.72),
+    "alumna_karate": dict(_BASE, body="menuda", skin="#F0D0B0", hair_c="#121010", hair="melena", nose="fina", top="gi",
+                          bottom="gi", cloth="#FFFFFF", collar="#F2F2F2", belt="#7A1E1E"),
+    "alumno_mayor": dict(_BASE, body="pesado", skin="#E2BC9C", hair_c="#6E5A44", hair="rapado", nose="ancha", jaw=1.2,
+                         top="gi", bottom="gi", cloth="#EFEDE6", collar="#E2DCCB", belt="#1A1A1A", extras=["barba"]),
+}
+LOOKS.update(AUDIENCE)

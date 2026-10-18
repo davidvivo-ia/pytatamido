@@ -52,7 +52,7 @@ def _lerp2(a, b, t):
     return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
 
 
-def tube_pts(a, b, ra, rb, bulge=0.0, bt=0.45, side=0.0, grow=0.0, k=1.0, off=(0.0, 0.0), n=8):
+def tube_pts(a, b, ra, rb, bulge=0.0, bt=0.45, side=0.0, grow=0.0, k=1.0, off=(0.0, 0.0), n=7):
     """Contorno de un miembro que se estrecha de ra a rb con un abultamiento muscular.
 
     side: +1 abulta hacia el lado izquierdo del eje (a→b), -1 hacia el derecho, 0 simétrico.
@@ -79,8 +79,8 @@ def tube_pts(a, b, ra, rb, bulge=0.0, bt=0.45, side=0.0, grow=0.0, k=1.0, off=(0
         right.append((cx - px * rr, cy - py * rr))
     re_, rs = rb * k + grow, ra * k + grow
     capb, capa = [], []
-    for j in range(1, 6):
-        th = math.pi * j / 6
+    for j in range(1, 5):
+        th = math.pi * j / 5
         c, s = math.cos(th), math.sin(th)
         capb.append((bx + off[0] + (px * c + ux * s) * re_, by + off[1] + (py * c + uy * s) * re_))
         capa.append((ax + off[0] - (px * c + ux * s) * rs, ay + off[1] - (py * c + uy * s) * rs))
@@ -1021,11 +1021,11 @@ def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, 
         rx = maxx * k
     ry = -miny * k
     _render(fig, canvas, T, k, ow_px * ss, outline, flat=flat, ss=ss, fac=fac, baked=not maps)
-    size = (max(1, w // ss), max(1, h // ss)) if ss > 1 else (w, h)
+    size = (max(1, int(w / ss)), max(1, int(h / ss))) if ss > 1 else (w, h)
     data = None
     if maps:
         # el mapa de datos va directo a resolución final: la GPU lo desenfoca igualmente
-        data = pygame.Surface(size)
+        data = pygame.Surface(size, pygame.SRCALPHA)
         k1 = k / ss
         if fac == 1:
             def T1(p):
@@ -1062,17 +1062,12 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
     rim = 1.0 if active else f.rim
     ocol = mixc(OUTLINE, f.player_color, min(1.0, rim)) if not lut_bw else OUTLINE
     ow = 2.0 + 1.4 * min(1.0, rim)
-    ss = cfg.get("ss", 2)
+    # supermuestreo adaptativo: con el luchador grande en pantalla basta con menos muestras
+    ss = max(1.0, min(cfg.get("ss", 2), cfg.get("ss_px", 2.7) / max(0.1, cam.S(1))))
     x0, y0 = cam.P(f.x, f.y)
     if data_surf is not None:
         img, data, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=ss, outline=ocol, ow_px=ow, maps=True)
-        # el mapa de datos no tiene alfa: se compone sólo donde la figura es opaca
-        mask = pygame.mask.from_surface(img, 127)
-        dpos = (int(x0 - rx), int(y0 - ry))
-        cut = mask.to_surface(setcolor=(255, 255, 255), unsetcolor=(0, 0, 0))
-        data.blit(cut, (0, 0), special_flags=pygame.BLEND_MULT)
-        data.set_colorkey((0, 0, 0))
-        data_surf.blit(data, dpos)
+        data_surf.blit(data, (int(x0 - rx), int(y0 - ry)))
     else:
         img, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=ss, outline=ocol, ow_px=ow)
     surf.blit(img, (int(x0 - rx), int(y0 - ry)))
@@ -1102,7 +1097,7 @@ def draw_trail(layer, f: Fighter, cam: Camera):
     for sil, wx, wy, rx, ry, t0 in imgs:
         age = (f.anim_t - t0) / 0.26
         x0, y0 = cam.P(wx, wy)
-        sil.set_alpha(int(170 * (1 - age)))
+        sil.set_alpha(int(105 * (1 - age)))
         layer.blit(sil, (int(x0 - rx), int(y0 - ry)))
     if imgs or not f.trail:
         return

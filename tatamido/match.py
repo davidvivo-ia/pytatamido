@@ -573,7 +573,7 @@ class Match:
         df.mash = 0
         df.x = att.x + att.facing * 60
         df.y = 0
-        self.cam.override = ((att.x + df.x) / 2, 1.45)
+        self.cam.override = ((att.x + df.x) / 2, 2.5)
         self.fx.popup("SUMISIÓN", (255, 200, 170), 44, H * 0.18, 60, sub="¡Pulsa AGARRE / BLOQUEO con ritmo!")
 
     def update_ground(self):
@@ -704,7 +704,7 @@ class Match:
     def kiai_connect(self, att: Fighter, df: Fighter):
         self.slowmo = 0.5
         self.slowmo_t = 120
-        self.cam.override = ((att.x + df.x) / 2, 1.35)
+        self.cam.override = ((att.x + df.x) / 2, 2.55)
         self.fx.do_flash(0.6, (255, 240, 220))
         self.intensity = 1.0
 
@@ -765,7 +765,7 @@ class Match:
             self.replay_angle = angle
         self.apply_snapshot(self.replay_frames[idx])
         a, b = self.f
-        zooms = (1.0, 1.5, 1.25)
+        zooms = (1.7, 2.6, 2.15)
         self.cam.override = ((a.x + b.x) / 2 + (0, -60, 60)[angle % 3], zooms[angle % 3])
         self.cam.follow(a, b, 0)
 
@@ -795,7 +795,7 @@ class Match:
             band.blit(fade, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
             surf.blit(band, (0, fy + 2))
         for f in order:
-            draw_trail(layer, f, self.cam)
+            draw_trail(surf, f, self.cam)
         for f in order:
             draw_fighter(surf, f, self.cam, rig, self.cfg, self.debug, bw)
         self.fx.draw_world(surf, self.cam, layer)
@@ -829,13 +829,15 @@ class Match:
         self.dojo.draw_beams(None, self.cam, fxl, intensity_override=0)
         order = sorted(self.f, key=lambda f: (f.state in (Fighter.ATTACK, Fighter.KIAI, Fighter.THROWING), -abs(f.y)))
         for f in order:
-            draw_trail(fxl, f, self.cam)
+            draw_trail(fig, f, self.cam)        # las estelas van detrás de los cuerpos
         cfg = dict(self.cfg, shadows=False)
         for f in order:
             draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd)
         self.fx.draw_world(fxl, self.cam, fxl)
         self.dojo.draw_rain(fxl)
         extra = {}
+        if self.cfg.get("bloom"):
+            extra["dof"] = 2.4          # el fondo se suaviza un poco: los cuerpos se despegan
         if self.kiai_active is not None:
             extra["dof"] = 7.0
         if self.ground is not None:

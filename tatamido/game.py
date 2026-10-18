@@ -134,6 +134,16 @@ class Game:
         except Exception:
             return pygame.display.set_mode((W, H))
 
+    def adapt_quality(self, ms: float):
+        """Escalador dinámico: si la CPU se pasa del presupuesto de 60 fps, baja la densidad de
+        supermuestreo de los luchadores antes que la fluidez; si sobra tiempo, la recupera."""
+        self._ms = ms if not hasattr(self, "_ms") else self._ms * 0.95 + ms * 0.05
+        px = self.cfg.get("ss_px", 2.7)
+        if self._ms > 13.5 and px > 1.2:
+            self.cfg["ss_px"] = max(1.2, px - 0.02)
+        elif self._ms < 10.0 and px < 2.7:
+            self.cfg["ss_px"] = min(2.7, px + 0.01)
+
     def capture(self) -> pygame.Surface:
         """Fotograma actual tal y como lo ve el jugador."""
         if self.gpu is not None:
@@ -192,8 +202,10 @@ class Game:
                 elif e.type == pygame.JOYBUTTONDOWN:
                     self.on_joy(e)
             keys = pygame.key.get_pressed()
+            t_work = time.perf_counter()
             self.update(keys)
             self.draw()
+            self.adapt_quality((time.perf_counter() - t_work) * 1000.0)
             pygame.display.flip()
             if self.max_frames and self.frame >= self.max_frames:
                 self.quit = True

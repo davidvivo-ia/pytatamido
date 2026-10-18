@@ -48,6 +48,20 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   de tres tonos según la luz, sudor que hace brillar la piel, antebrazos que enrojecen al bloquear,
   supermuestreo 2× (3× en el preset *cine*) y contorno del color del jugador en los frames activos.
 
+## Dirección de fotografía 2026
+
+- **Cámara de juego de lucha moderno:** los luchadores ocupan alrededor de la mitad de la altura de la
+  pantalla (antes, entre el 21 y el 33 %). El zoom sigue la distancia, se abre en los saltos y sube con
+  ellos; Kiai Final, fase de suelo y repeticiones usan planos cerrados.
+- **Sombreado anime de dos tonos:** rampa de luz con borde definido y suave, sombras de color desplazado
+  (la piel hacia el rojo tibio, la tela hacia el azul del cielo), línea de dispersión subsuperficial en el
+  borde de la piel, brillos duros de sudor, cuero y satén, anillo de luz en el pelo y contraluz recortado.
+- **Contraste y profundidad:** menos neblina y bloom, curva de contraste más firme y desenfoque suave
+  del fondo en juego (presets *alto* en adelante) para despegar los cuerpos.
+- **Público real:** alumnos y un maestro del dojo sentados en seiza, dibujados con el mismo renderer.
+- **Escalador dinámico de calidad:** si un fotograma se pasa de presupuesto, baja el supermuestreo de
+  los luchadores antes que la fluidez, y lo recupera cuando sobra tiempo.
+
 ## Renderer 2026: shaders en la GPU
 
 Si hay OpenGL 3.3 y `moderngl`, el juego usa un pipeline de shaders propio; si no, cae solo al

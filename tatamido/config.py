@@ -117,12 +117,12 @@ PHOTO_LUTS = ["Natural", "Caravaggio", "Hammershøi", "Kurosawa B/N", "Daido Mor
 # light_uv: posición de la fuente de los rayos en coordenadas de pantalla normalizadas (puede estar fuera).
 # shadow: (desplazamiento x, compresión y, suavidad, intensidad) de la sombra proyectada.
 GPU_RIGS = {
-    1: dict(key3=(-0.72, 0.5, 0.48), exposure=-0.25, key_i=1.15, amb_i=1.0, sky_fill=0.16, beam_i=1.0, rays=0.45, rays_col=(1.0, 0.72, 0.42),
+    1: dict(key3=(-0.72, 0.5, 0.48), exposure=-0.25, key_i=1.15, amb_i=1.0, sky_fill=0.16, beam_i=1.0, rays=0.26, rays_col=(1.0, 0.72, 0.42),
             light_uv=(-0.3, -0.9), refl=0.10, wet=0.0, rim=1.1, emissive=1.5, light_dir=(-0.75, -0.66),
-            shadow=(0.55, 0.30, 0.010, 0.62), lift=(0.008, 0.004, 0.0), gain=(1.04, 1.0, 0.93), sat=1.2, power=1.14, vig=0.4),
-    2: dict(key3=(-0.45, 0.72, 0.52), exposure=0.15, key_i=0.9, amb_i=1.3, sky_fill=0.25, beam_i=0.45, rays=0.25, rays_col=(0.55, 0.68, 1.0),
+            shadow=(0.55, 0.30, 0.010, 0.62), lift=(0.0, 0.0, 0.0), gain=(1.05, 1.0, 0.92), sat=1.24, power=1.24, vig=0.42),
+    2: dict(key3=(-0.45, 0.72, 0.52), exposure=0.15, key_i=0.9, amb_i=1.3, sky_fill=0.25, beam_i=0.45, rays=0.16, rays_col=(0.55, 0.68, 1.0),
             light_uv=(-0.2, -0.95), refl=0.2, wet=0.0, rim=0.8, emissive=1.4, light_dir=(-0.45, -0.89),
-            shadow=(0.30, 0.42, 0.018, 0.45), lift=(0.0, 0.012, 0.03), gain=(0.97, 1.0, 1.06), sat=1.12, power=1.04, vig=0.45),
+            shadow=(0.30, 0.42, 0.018, 0.45), lift=(0.0, 0.008, 0.022), gain=(0.97, 1.0, 1.06), sat=1.16, power=1.14, vig=0.45),
     3: dict(key3=(0.0, 0.86, 0.5), exposure=0.55, key_i=0.45, amb_i=1.15, sky_fill=0.15, beam_i=0.0, rays=0.12, rays_col=(1.0, 0.6, 0.3),
             light_uv=(0.5, -0.6), refl=0.32, wet=0.0, rim=0.35, emissive=2.4, light_dir=(0.0, -1.0),
             shadow=(0.10, 0.55, 0.030, 0.5), lift=(0.0, 0.012, 0.022), gain=(1.08, 0.98, 0.88), sat=1.22, power=1.08, vig=0.6),
@@ -130,6 +130,11 @@ GPU_RIGS = {
             light_uv=(0.5, -0.6), refl=0.42, wet=1.0, rim=0.35, emissive=2.4, light_dir=(0.0, -1.0),
             shadow=(0.10, 0.55, 0.035, 0.45), lift=(0.0, 0.016, 0.03), gain=(1.02, 0.98, 0.94), sat=1.12, power=1.08, vig=0.65),
 }
+
+
+def cam_base_off(zoom):
+    """Desplazamiento vertical del plano del suelo según el zoom (igual en CPU, dojo y GPU)."""
+    return (1 - zoom) * 90 if zoom < 1 else 34 * (zoom - 1)
 
 
 def lerp_tree(a, b, t):

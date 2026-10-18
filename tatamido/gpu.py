@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     moderngl = None
     np = None
 
-from .config import FLOOR_Y, H, W, mixc
+from .config import FLOOR_Y, H, W, cam_base_off, mixc
 
 LUT_IDS = {"Natural": 0, "Caravaggio": 1, "Hammershøi": 2, "Kurosawa B/N": 3, "Daido Moriyama": 4}
 DALT_IDS = {"off": 0, "protanopia": 1, "deuteranopia": 2, "tritanopia": 3}
@@ -258,15 +258,20 @@ vec3 litFighter(vec2 p, vec4 fg) {
     vec3 V = vec3(0., 0., 1.);
     vec3 L = normalize(uKey3);
     vec3 Hv = normalize(L + V);
-    float wrap = mat == 1 ? 0.5 : mat == 5 ? 0.3 : 0.18;
-    float ndl = dot(N, L);
-    float diff = clamp((ndl + wrap) / (1. + wrap), 0., 1.);
-    // ambiente hemisférico: cielo arriba, rebote cálido del tatami abajo
-    vec3 light = mix(uBounce, uSky, N.y * 0.5 + 0.5) * ao + uKey * diff;
-    float sp = 0.;
     float spec = fd.b;
-    // farolillos: luces puntuales sobre las cabezas
+    float ndl = dot(N, L);
+    // ── rampa de dos tonos (anime 2026): borde definido y suave, sombra de color desplazado ──
+    float soft = mat == 1 ? 0.16 : 0.1;
+    float lit = smoothstep(-0.08 - soft, -0.08 + soft, ndl) * mix(1.0, ao, 0.6);
+    vec3 amb = mix(uBounce, uSky, N.y * 0.5 + 0.5) * ao;
+    vec3 shTint = mat == 1 ? vec3(1.06, 0.74, 0.68) : mat == 5 ? vec3(0.9, 0.86, 1.05) : vec3(0.84, 0.9, 1.08);
+    vec3 shadowCol = alb * (amb * 1.15 + uKey * 0.1) * shTint;
+    vec3 litCol = alb * (amb + uKey * (0.82 + 0.18 * max(ndl, 0.)));
+    vec3 col = mix(shadowCol, litCol, lit);
+    if (mat == 1) col += alb * uKey * vec3(1.0, 0.3, 0.16) * 1.2 * lit * (1. - lit);   // dispersión en el borde de sombra
+    // farolillos: luces puntuales con la misma rampa
     vec3 P3 = vec3(p.x, -p.y, 0.);
+    float lanHi = 0.;
     for (int i = 0; i < 4; i++) {
         vec4 l = uLanterns[i];
         if (l.w <= 0.) continue;
@@ -274,31 +279,23 @@ vec3 litFighter(vec2 p, vec4 fg) {
         float r = length(d);
         vec3 Ld = d / r;
         float att = l.w * 160000. / (r * r + 40000.);
-        light += uLan * att * clamp((dot(N, Ld) + wrap) / (1. + wrap), 0., 1.);
-        sp += att * pow(max(dot(N, normalize(Ld + V)), 0.), 40.) * (mat == 1 ? 0.15 + spec : mat == 4 ? 0.8 : 0.1);
+        float ramp = smoothstep(-0.12, 0.12, dot(N, Ld));
+        col += alb * uLan * att * ramp * 0.6;
+        lanHi += att * smoothstep(0.94, 0.975, dot(N, normalize(Ld + V)));
     }
-    vec3 col = alb * light;
-    if (mat == 1) {
-        // piel: dispersión subsuperficial en la línea de sombra, brillo del sudor
-        float term = smoothstep(0.0, 0.35, diff) * (1. - smoothstep(0.35, 0.8, diff));
-        col += alb * uKey * vec3(1.0, 0.32, 0.2) * term * 0.45;
-        sp += pow(max(dot(N, Hv), 0.), 28.) * (0.06 + 0.45 * spec);
-    } else if (mat == 2) {
-        col += alb * uKey * pow(1. - N.z, 3.0) * 0.18;            // brillo de fibra del algodón
-    } else if (mat == 3) {
-        sp += pow(max(dot(N, Hv), 0.), 14.) * 0.55;                // satén y lycra
-        col += alb * uKey * pow(1. - N.z, 2.5) * 0.18;
-    } else if (mat == 4) {
-        sp += pow(max(dot(N, Hv), 0.), 46.) * 0.9;                 // cuero
-    } else if (mat == 5) {
-        vec3 Nh = normalize(N + vec3(0., 0.6, 0.));                // banda de brillo del pelo
-        sp += pow(max(dot(Nh, Hv), 0.), 36.) * (0.25 + 0.4 * spec);
-    }
-    col += (uKey + uLan * uLanI * 0.5) * sp;
-    // contraluz de los shōji en el borde que mira a la luz y halo de los farolillos desde arriba
-    float rim = pow(clamp(1. - N.z, 0., 1.), 2.2);
-    col += uKey * uRimI * 0.3 * rim * smoothstep(-0.1, 0.6, dot(normalize(N.xy + 1e-4), normalize(L.xy + 1e-4)));
-    col += uLan * uLanI * 0.45 * rim * smoothstep(0.1, 0.8, N.y);
+    // brillos duros por material
+    float nh = dot(N, Hv);
+    float hi = 0.;
+    if (mat == 1) hi = smoothstep(0.955, 0.985, nh) * (0.08 + 0.85 * spec);                       // sudor
+    else if (mat == 3) hi = smoothstep(0.8, 0.9, nh) * 0.45 + pow(1. - N.z, 3.) * 0.15;          // satén y lycra
+    else if (mat == 4) hi = smoothstep(0.92, 0.96, nh) * 0.9;                                     // cuero
+    else if (mat == 5) hi = smoothstep(0.86, 0.93, dot(normalize(N + vec3(0., 0.55, 0.)), Hv)) * (0.3 + 0.4 * spec);   // anillo del pelo
+    else if (mat == 2) hi = smoothstep(0.62, 0.72, 1. - N.z) * 0.12;                             // fibra del algodón
+    col += (uKey * lit + uLan * uLanI * 0.4) * hi + uLan * lanHi * (mat == 1 || mat == 4 ? 0.6 : 0.15);
+    // contraluz recortado: shōji del lado de la luz, farolillos desde arriba
+    float rimM = smoothstep(0.5, 0.62, 1. - N.z);
+    col += uKey * uRimI * 0.55 * rimM * smoothstep(0.1, 0.5, dot(normalize(N.xy + 1e-4), normalize(L.xy + 1e-4)));
+    col += uLan * uLanI * 0.6 * rimM * smoothstep(0.2, 0.7, N.y);
     return col * uTint;
 }
 
@@ -570,7 +567,7 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
     rig = dojo.rig
     g = dojo.gpu_rig
     zoom = cam.zoom
-    base_y = FLOOR_Y + cam.yoff + cam.shake_y + (1 - zoom) * 90
+    base_y = FLOOR_Y + cam.yoff + cam.shake_y + cam_base_off(zoom)
     depth = 190 * (0.75 + zoom * 0.25)
     lanterns = []
     for (sx, sy, inten) in getattr(dojo, "lantern_pos", [])[:4]:
@@ -605,7 +602,7 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
         lanterns=lanterns, fighters=figs, decals=decals, waves=waves,
         light_uv=g["light_uv"], rays_i=g["rays"] if cfg.get("beams", True) else 0.0, rays_col=g["rays_col"],
         exposure=g["exposure"], lift=g["lift"], gain=g["gain"], sat=g["sat"], power=g["power"],
-        bloom=0.07 if cfg.get("bloom") else 0.025, ca=0.25 + (fx.ca if fx is not None else 0.0),
+        bloom=0.05 if cfg.get("bloom") else 0.02, ca=0.25 + (fx.ca if fx is not None else 0.0),
         vig=g["vig"], grain=0.03 if cfg.get("grain") else 0.0,
         spot=dojo.single_beam, spot_pos=(W / 2, FLOOR_Y + 40),
         impact=(1.0 if fx is not None and fx.impact > 0 else 0.0),
