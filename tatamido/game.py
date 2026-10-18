@@ -19,7 +19,7 @@ from .inputs import KEYMAP_P1, KEYMAP_P2, PlayerInput
 from .match import Match
 from .postfx import apply_lut, bloom
 from .replay import list_replays, load_replay, save_replay
-from .render_fighter import draw_portrait
+from .render_fighter import draw_figure_preview, draw_portrait
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  JUEGO: escenas, menús, modos
@@ -842,6 +842,16 @@ class Game:
             self.text(surf, f"Debilidad: {fd['weak']}", 18, x, yy + 32, (200, 170, 160))
             if self.sel_locked[p]:
                 self.text(surf, "LISTO", 30, x, yy + 62, (255, 240, 200), serif=True)
+        # figuras a cuerpo entero, frente a frente, respirando en su guardia
+        t = self.frame / 60.0
+        two = self.mode == "versus"
+        for p in range(2 if two else 1):
+            fd = FIGHTERS[self.sel[p]]
+            if fd.get("locked") and not self.save.get("okabe"):
+                continue
+            x = (535 if p == 0 else 750) if two else 640
+            draw_figure_preview(surf, fd, x, 672, 290 * fd["h"], facing=1 if p == 0 else -1, t=t + p * 1.3,
+                                rig=self.title_dojo.rig, ss=self.cfg.get("ss", 2))
         if self.mode != "versus":
             self.text(surf, "El rival lo elige el destino" if self.mode in ("versus_ai",) else "Arcade: once rivales" if self.mode == "arcade" else "Torneo: tres combates" if self.mode == "torneo" else "Entrenamiento", 22, W - 480, 360, (200, 190, 175))
         self.text(surf, "WASD / Flechas mover · U o Intro confirmar · Esc atrás", 18, W // 2, H - 32, (170, 160, 150), center=True)

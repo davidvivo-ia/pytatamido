@@ -22,12 +22,12 @@ GRAVITY = 0.9
 SAVE_PATH = os.path.join(os.path.expanduser("~"), ".tatamydo_save.json")
 
 PRESETS = {
-    "portatil": dict(particles=0.3, beams=False, grain=False, bloom=False, tilt=False, dust=20,  blur=False, shadows=False),
-    "bajo":     dict(particles=0.5, beams=True,  grain=False, bloom=False, tilt=False, dust=40,  blur=False, shadows=True),
-    "medio":    dict(particles=0.8, beams=True,  grain=False, bloom=False, tilt=True,  dust=80,  blur=False, shadows=True),
-    "alto":     dict(particles=1.0, beams=True,  grain=True,  bloom=True,  tilt=True,  dust=140, blur=False, shadows=True),
-    "ultra":    dict(particles=1.4, beams=True,  grain=True,  bloom=True,  tilt=True,  dust=220, blur=True,  shadows=True),
-    "cine":     dict(particles=2.0, beams=True,  grain=True,  bloom=True,  tilt=True,  dust=320, blur=True,  shadows=True),
+    "portatil": dict(ss=1, particles=0.3, beams=False, grain=False, bloom=False, tilt=False, dust=20,  blur=False, shadows=False),
+    "bajo":     dict(ss=1, particles=0.5, beams=True,  grain=False, bloom=False, tilt=False, dust=40,  blur=False, shadows=True),
+    "medio":    dict(ss=2, particles=0.8, beams=True,  grain=False, bloom=False, tilt=True,  dust=80,  blur=False, shadows=True),
+    "alto":     dict(ss=2, particles=1.0, beams=True,  grain=True,  bloom=True,  tilt=True,  dust=140, blur=False, shadows=True),
+    "ultra":    dict(ss=2, particles=1.4, beams=True,  grain=True,  bloom=True,  tilt=True,  dust=220, blur=True,  shadows=True),
+    "cine":     dict(ss=3, particles=2.0, beams=True,  grain=True,  bloom=True,  tilt=True,  dust=320, blur=True,  shadows=True),
 }
 PRESET_ORDER = ["portatil", "bajo", "medio", "alto", "ultra", "cine"]
 

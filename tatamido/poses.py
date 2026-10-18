@@ -8,24 +8,95 @@ from .fighter import Fighter
 # ─────────────────────────────────────────────────────────────────────────────
 # Cada pose es un diccionario de articulaciones en coordenadas locales (cm, mirando a la derecha,
 # origen en la cadera, y negativo hacia arriba).  Interpolamos entre poses según el estado.
+_J = ("hip", "chest", "head", "sh_l", "sh_r", "el_l", "el_r", "hd_l", "hd_r", "kn_l", "kn_r", "ft_l", "ft_r")
+_UPPER = ("hip", "chest", "head", "sh_l", "sh_r", "el_l", "el_r", "hd_l", "hd_r")
+
+
+def _st(*v):
+    return {k: (v[2 * i], v[2 * i + 1]) for i, k in enumerate(_J)}
+
+
+# Guardia de cada estilo: cadera, pecho, cabeza, hombros, codos, manos, rodillas y pies.
+STANCES = {
+    "default": _st(0, -95, 2, -140, 4, -176, -6, -138, 8, -138, 14, -118, 28, -118, 26, -140, 40, -148, -12, -50, 16, -50, -20, 0, 22, 0),
+    # judo: erguido, rodillas sueltas, manos abiertas buscando solapa y manga
+    "haruki": _st(0, -92, 6, -137, 9, -173, -2, -135, 11, -135, 16, -112, 28, -114, 34, -120, 45, -126, -14, -48, 18, -48, -24, 0, 24, 0),
+    # kyokushin: postura larga, puños a la altura de la cara, codos cerrados
+    "ines": _st(0, -91, 3, -137, 5, -173, -5, -135, 9, -135, 10, -116, 24, -118, 18, -146, 32, -152, -18, -47, 20, -48, -32, 0, 28, 0),
+    # sambo: agazapado, manos bajas y adelantadas
+    "tomasz": _st(0, -86, 12, -128, 17, -162, 5, -127, 17, -127, 18, -104, 32, -106, 32, -112, 44, -116, -16, -44, 22, -45, -30, 0, 28, 0),
+    # capoeira: ginga baja y abierta; un brazo protege la cara
+    "ayo": _st(0, -84, 4, -128, 8, -164, -3, -127, 10, -127, 4, -108, 26, -128, -8, -98, 22, -150, -22, -42, 22, -42, -38, 0, 34, 0),
+    # sumo: piernas muy abiertas, rodillas hundidas, palmas al frente
+    "kanoa": _st(0, -80, 10, -122, 16, -156, 4, -122, 16, -122, 22, -100, 34, -102, 40, -106, 50, -110, -26, -42, 26, -42, -34, 0, 36, 0),
+    # wing chun: estrecha y erguida, las dos manos en la línea central
+    "lin": _st(0, -93, 2, -139, 3, -175, -3, -137, 6, -137, 16, -122, 28, -124, 30, -134, 46, -138, -10, -48, 12, -48, -16, 0, 16, 0),
+    # jiu-jitsu: inclinado, manos abiertas para agarrar
+    "tito": _st(0, -88, 10, -131, 14, -166, 3, -130, 15, -130, 18, -108, 30, -110, 32, -118, 42, -122, -16, -46, 20, -46, -28, 0, 26, 0),
+    # muay thai: alto, guardia larga y alta, talón delantero levantado
+    "somchai": _st(0, -96, 0, -141, 2, -177, -6, -139, 7, -139, 8, -124, 22, -126, 16, -154, 30, -156, -12, -50, 18, -52, -22, 0, 24, -3),
+    # taekwondo: de perfil, manos bajas, rebotando
+    "yeon": _st(0, -94, -1, -140, 1, -176, -6, -138, 6, -138, 4, -118, 20, -118, 12, -124, 30, -128, -14, -49, 16, -49, -26, 0, 26, 0),
+    # lucha olímpica: muy baja, cabeza arriba, manos delante
+    "elsa": _st(0, -80, 16, -118, 24, -150, 9, -118, 21, -118, 24, -96, 36, -98, 38, -104, 48, -108, -20, -40, 26, -42, -34, 0, 32, 0),
+    # boxeo: guardia alta, mentón abajo
+    "matias": _st(0, -92, 5, -136, 9, -170, -2, -134, 11, -134, 10, -116, 24, -116, 20, -144, 32, -148, -14, -48, 18, -48, -26, 0, 24, 0),
+    # aikido: hanmi relajado, mano delantera al centro, la otra en la cadera
+    "okabe": _st(0, -94, 2, -139, 4, -175, -5, -137, 8, -137, 2, -112, 26, -120, 10, -96, 44, -126, -12, -49, 16, -49, -24, 0, 22, 0),
+}
+
+
+def stance(fd):
+    return STANCES.get(fd["id"], STANCES["default"])
+
+
 def pose_idle(t, fd, breath):
-    bob = math.sin(t * 2.2) * (1.5 + 2.5 * breath)
-    guard = {"gi": -20, "shorts": -30, "tank": -28, "changshan": -22, "mawashi": 6, "hakama": 2}.get(fd["outfit"], -18)
-    return dict(hip=(0, -95 + bob), chest=(2, -140 + bob), head=(4, -176 + bob),
-                sh_l=(-6, -138 + bob), sh_r=(8, -138 + bob),
-                el_l=(14, -118 + bob), el_r=(28, -118 + bob),
-                hd_l=(26, -128 + guard * 0.6 + bob), hd_r=(40, -128 + guard + bob),
-                kn_l=(-12, -50), kn_r=(16, -50), ft_l=(-20, 0), ft_r=(22, 0))
+    p = dict(stance(fd))
+    fid = fd["id"]
+    dx = 0.0
+    dy = math.sin(t * 2.2) * (1.5 + 2.5 * breath)
+    feet_dy = 0.0
+    if fid == "ayo":                       # ginga: el cuerpo oscila de lado a lado
+        g = math.sin(t * 3.2)
+        dx = 12 * g
+        dy += 3 * abs(g)
+        p["kn_l"] = (p["kn_l"][0] + 8 * g, p["kn_l"][1])
+        p["kn_r"] = (p["kn_r"][0] + 8 * g, p["kn_r"][1])
+        p["hd_l"], p["hd_r"] = ((p["hd_l"], p["hd_r"]) if g > 0 else ((p["hd_r"][0] - 22, p["hd_r"][1]), (p["hd_l"][0] + 30, p["hd_l"][1])))
+    elif fid == "somchai":                 # ritmo del muay thai: sube y baja con el talón
+        dy = math.sin(t * 2.6) * 3
+        p["ft_r"] = (p["ft_r"][0], -3 - 2 * max(0.0, math.sin(t * 2.6)))
+    elif fid == "yeon":                    # rebote ligero sobre las puntas
+        b = abs(math.sin(t * 6.5))
+        dy = -4 * b
+        feet_dy = -2.5 * b
+    elif fid == "matias":                  # bob and weave
+        w = math.sin(t * 2.8)
+        dx = 5 * w
+        dy += 4 * abs(w)
+    elif fid == "lin":                     # inmóvil: casi no respira
+        dy *= 0.4
+    for k in _UPPER:
+        x, y = p[k]
+        f = 1.0 if k != "hip" else 0.5
+        p[k] = (x + dx * f, y + dy)
+    if feet_dy:
+        for k in ("ft_l", "ft_r"):
+            p[k] = (p[k][0], p[k][1] + feet_dy)
+        for k in ("kn_l", "kn_r"):
+            p[k] = (p[k][0], p[k][1] + feet_dy)
+    return p
 
 
 def pose_walk(t, fd, back=False):
     s = math.sin(t * 9) * (-1 if back else 1)
     c = math.cos(t * 9)
     p = pose_idle(t, fd, 0)
-    p["kn_l"] = (-12 + 14 * s, -52 - 6 * abs(c))
-    p["kn_r"] = (14 - 14 * s, -52 - 6 * abs(c))
-    p["ft_l"] = (-20 + 24 * s, -6 * max(0, c))
-    p["ft_r"] = (22 - 24 * s, -6 * max(0, -c))
+    st = stance(fd)
+    p["kn_l"] = (st["kn_l"][0] + 14 * s, st["kn_l"][1] - 2 - 6 * abs(c))
+    p["kn_r"] = (st["kn_r"][0] - 14 * s, st["kn_r"][1] - 2 - 6 * abs(c))
+    p["ft_l"] = (st["ft_l"][0] + 22 * s, -6 * max(0, c))
+    p["ft_r"] = (st["ft_r"][0] - 22 * s, -6 * max(0, -c))
     return p
 
 
@@ -56,6 +127,17 @@ def pose_attack(anim, phase, fd, kick=False):
     base = pose_idle(0, fd, 0)
     ext = smoothstep(phase / 0.4) if phase < 0.4 else (1 - smoothstep((phase - 0.5) / 0.5)) if phase > 0.5 else 1.0
     lean = 10 * ext
+    p = _attack_shape(anim, base, ext, lean, fd, kick)
+    # las animaciones están escritas sobre la guardia estándar: al principio y al final del golpe
+    # se funden con la guardia propia del luchador, en el impacto llegan a la forma escrita.
+    d = STANCES["default"]
+    for k in _J:
+        if p[k] != base[k]:
+            p[k] = (p[k][0] + (base[k][0] - d[k][0]) * (1 - ext), p[k][1] + (base[k][1] - d[k][1]) * (1 - ext))
+    return p
+
+
+def _attack_shape(anim, base, ext, lean, fd, kick):
     p = dict(base)
     if anim == "jab":
         p["hd_r"] = (lerp(40, 92, ext), -138)

@@ -12,6 +12,34 @@ el taiko y el shakuhachi se generan en el arranque.
 |---|---|
 | ![Noche de farolillos](docs/02_noche.jpg) | ![Desempate bajo la lluvia](docs/03_lluvia.jpg) |
 | ![Kiai Final](docs/04_kiai_final.jpg) | ![Modo Foto Caravaggio](docs/05_modo_foto_caravaggio.jpg) |
+| ![Selección](docs/06_seleccion.jpg) | |
+
+## Los luchadores
+
+![Los doce luchadores](docs/07_luchadores.jpg)
+
+Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anatomy.py` y `render_fighter.py`):
+
+- **Siete tipos de cuerpo** con perfil de torso real (pecho, vientre, espalda, glúteo) y miembros que se
+  estrechan con músculo: cuádriceps, gemelo, bíceps. Kanoa tiene vientre de sumo que tiembla al recibir.
+- **Cabeza de perfil** con frente, nariz (recta, ancha, fina o rota dos veces), labios, mentón, mandíbula,
+  oreja y ojo; expresiones de esfuerzo, grito, dolor, jadeo y sonrisa.
+- **Rasgos de cada ficha:** orejas de coliflor de Haruki y Tito, cicatriz en la ceja de Inés, barba y
+  rubor de Tomasz, rastas de Ayo, moño chonmage aceitado de Kanoa, flequillo recto de Lin, mongkol,
+  prajied y tatuaje sak yant de Somchai, coleta alta de Yeon, trenza platino y pecas de Elsa, bigote,
+  nariz rota y ojeras de Matías, moño blanco, barba rala, arrugas y manchas de Okabe.
+- **Vestuario fiel:** judogi con solapa en V, cuello amarilleado y cinturón anudado (deshilachado en
+  Haruki, con cuatro grados en Tito), kurtka con charreteras y botas de cuero, abadá con cordel amarillo
+  y verde, mawashi con sagari, changshan con cuello mao y botones de lazo granate, pantalón corto de
+  satén con cinturilla, dobok con cuello negro en V, singlet con franja y rodilleras de neopreno, camiseta
+  de tirantes con chándal celeste y guantillas, y la hakama de siete pliegues dividida en dos perneras.
+- **Una guardia por disciplina:** judo con las manos abiertas buscando el agarre, kyokushin con los puños
+  altos, sambo agazapado, ginga de capoeira que oscila, sumo hundido, línea central del wing chun, ritmo
+  de muay thai, rebote de taekwondo, cuclillas de lucha, bob and weave del boxeo y hanmi del aikido.
+  Los golpes nacen de esa guardia y vuelven a ella.
+- **Acabado:** contorno por capas de profundidad (el brazo delantero se recorta sobre el pecho), sombreado
+  de tres tonos según la luz, sudor que hace brillar la piel, antebrazos que enrojecen al bloquear,
+  supermuestreo 2× (3× en el preset *cine*) y contorno del color del jugador en los frames activos.
 
 ## Renderer 2026: shaders en la GPU
 
@@ -43,7 +71,7 @@ python Tatamydo.py --renderer gpu    # auto (por defecto) | gpu | cpu
 | `config.py` · `data.py` | Constantes, presets gráficos, rigs de luz por asalto, los doce luchadores |
 | `inputs.py` · `moves.py` | Teclado/mando con buffer de 7 frames, comandos clásicos, frame data por luchador |
 | `fighter.py` | Máquina de estados, cancelaciones en golpe, Kiai Final, IA con personalidad |
-| `poses.py` · `render_fighter.py` | Esqueleto procedimental, ropa, luz lateral, contornos, estelas |
+| `anatomy.py` · `poses.py` · `render_fighter.py` | Cuerpos, rostros y vestuario de los doce; guardias por estilo; dibujo supermuestreado |
 | `gpu.py` | Renderer de shaders: suelo procedural, sombras, rayos, reflejos, HDR, AgX, DoF, FXAA |
 | `dojo.py` · `fx.py` · `postfx.py` | Kōyō-kan, polvo, lluvia, tinta sumi-e; posprocesado del renderer CPU |
 | `match.py` · `replay.py` | Triángulo, puntuación, fase de suelo, repetición de ippon, grabación determinista |
