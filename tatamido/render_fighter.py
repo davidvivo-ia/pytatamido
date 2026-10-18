@@ -799,6 +799,64 @@ def _leg_ik(H, ft0, T, S, front, up, stretch=1.2):
     return (H[0] + ux * a + px * h * sg, H[1] + uy * a + py * h * sg), ft
 
 
+class Secondary:
+    """Animación secundaria de un luchador entre fotogramas: la tela que llega tarde y los smears.
+
+    Guarda puntos en coordenadas del mundo (en unidades de pose), para que la manga se retrase tanto si se
+    mueve el brazo como si el luchador entero avanza. Se actualiza una vez por fotograma de simulación: los
+    redibujos del mismo fotograma (Modo Foto, reflejos) no la aceleran."""
+
+    def __init__(self, f):
+        self.fac = f.facing
+        self.t = None
+        self.pts = {}
+        self.prev = {}
+        self.fresh = False
+
+    @staticmethod
+    def of(f):
+        st = getattr(f, "_secondary", None)
+        if st is None or st.fac != f.facing:          # al darse la vuelta, la ropa empieza en su sitio
+            st = Secondary(f)
+            try:
+                f._secondary = st
+            except AttributeError:
+                return st
+        key = int(round(getattr(f, "anim_t", 0.0) * 60))
+        st.fresh = st.t is not None and key != st.t
+        st.t = key
+        st.root = (getattr(f, "x", 0.0) * f.facing / max(0.5, f.scale), getattr(f, "y", 0.0) / max(0.5, f.scale))
+        return st
+
+    def lag(self, name, p, k=0.45, maxd=6.0):
+        """El punto p (local) seguido con retraso: devuelve dónde está la tela que cuelga de él."""
+        w = (p[0] + self.root[0], p[1] + self.root[1])
+        q = self.pts.get(name)
+        if q is None:
+            q = w
+        elif self.fresh:
+            q = (q[0] + (w[0] - q[0]) * k, q[1] + (w[1] - q[1]) * k)
+        dx, dy = q[0] - w[0], q[1] - w[1]
+        d = math.hypot(dx, dy)
+        if d > maxd:
+            q = (w[0] + dx / d * maxd, w[1] + dy / d * maxd)
+            dx, dy = q[0] - w[0], q[1] - w[1]
+        self.pts[name] = q
+        return (p[0] + dx, p[1] + dy)
+
+    def motion(self, name, p):
+        """Dónde estaba el punto p (local) en el fotograma anterior y su velocidad en cm por fotograma."""
+        w = (p[0] + self.root[0], p[1] + self.root[1])
+        old, last = self.prev.get(name, (None, None))
+        if self.fresh or old is None:
+            old, last = last, w
+        self.prev[name] = (old, last)
+        if old is None:
+            return p, 0.0
+        q = (old[0] - self.root[0], old[1] - self.root[1])
+        return q, math.hypot(w[0] - old[0], w[1] - old[1])
+
+
 PUNCHES = {"jab": "r", "hook": "r", "cross": "l"}
 
 
@@ -871,6 +929,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     skin_sheen = 0.6 + 2.2 * sweat
     J = dict(pose)
     strike = _strike(f, J, B)                # puñetazo activo: brazo que golpea y zancada hasta el rival
+    sec = Secondary.of(f)
     H, Cc0, Hd0 = J["hip"], J["chest"], J["head"]
     # el esqueleto de poses deja los hombros bajos y la cabeza lejos (36 cm): subimos la cintura
     # escapular y acercamos la cabeza para un cuello real de ~8 cm visibles
@@ -976,6 +1035,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         """Pernera que se comporta como tela: se recoge detrás de la rodilla al doblarla, se tensa sobre la
         rótula y marca líneas de tensión desde la ingle, cuelga por el lado que mira al suelo con la pierna
         levantada y se apila sobre el tobillo. Con `band`, dobladillo con pespuntes; con `cuff`, puño elástico."""
+        hem = sec.lag("hem" + str(g), hem, k=0.5, maxd=5.0)     # el bajo de la pernera llega tarde
         Ls = dist(kn, hem)
         uk = L1 / max(1e-6, L1 + Ls)
         t1 = _norm(kn[0] - H[0], kn[1] - H[1])
@@ -1079,6 +1139,15 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         (fdx, fdy), heel_up, grounded = foot_frames[side]
         dvx, dvy = -fdy, fdx                 # del empeine a la planta
         x_m = kn[0]
+        # smear de la patada: la pierna rápida deja la silueta estirada uno o dos fotogramas
+        was, speed = sec.motion("ft_" + side, ankle)
+        if speed > 10.0 and f.state in (Fighter.ATTACK, Fighter.KIAI):
+            covered = bottom in ("gi", "abada", "track", "hakama")
+            fig.m("cloth" if covered else "skin")
+            smc = C(lk.get("pants", cloth) if covered else skin, x_m, depth)
+            k_ = clamp((speed - 10.0) / 14.0, 0.0, 1.0)
+            rr = ca1 * (1.6 if covered else 1.0)
+            fig.tube(g, _lerp2(ankle, was, 0.85 * k_), _lerp2(kn, ankle, 0.75), rr * 0.5, rr, smc, outline=False, sheen=0.3)
         sk = C(skin, x_m, depth)
         L1, L2 = dist(H, kn), dist(kn, ankle)
         if bottom != "hakama":
@@ -1683,6 +1752,14 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         hit_arm = strike is not None and strike[0] == side
         sh, el, hd = arm_ik(J["sh_" + side], J["el_" + side], J["hd_" + side],
                             *((1.2 + 0.05 * strike[1], 3.0 + 4.0 * strike[1]) if hit_arm else ()))
+        # smear: con el puño rápido, la silueta se estira entre donde estaba y donde está (1-2 fotogramas)
+        was, speed = sec.motion("hd_" + side, hd)
+        if speed > 9.0 and f.state in (Fighter.ATTACK, Fighter.KIAI):
+            fig.m("skin")
+            rr = B["hand"] * 0.75
+            k_ = clamp((speed - 9.0) / 12.0, 0.0, 1.0)
+            tail = _lerp2(hd, was, 0.85 * k_)
+            fig.tube(g, tail, hd, rr * 0.55, rr, C(skin, hd[0], depth), outline=False, sheen=0.4)
         fig.m("skin")
         sk = C(skin, el[0], depth)
         fore_sk = mixc(sk, (205, 80, 70), min(0.4, 0.4 * red)) if not mono else sk
@@ -1699,7 +1776,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                        [(0, fo0), (0.3, fo0 + fob), (0.85, fo1 * 0.95), (1, fo1 * 0.9)], fore_sk, sheen=skin_sheen)
             fig.m("cloth")
             slc = C(cloth, el[0], depth)
-            cut = _lerp2(el, hd, sleeve)
+            cut = sec.lag("cut_" + side, _lerp2(el, hd, sleeve), k=0.42, maxd=6.0)   # la manga llega tarde
             wide = 3.4 if top != "changshan" else 1.4
             Ls = dist(cap, sh) + L1 + dist(el, cut)
             us, ue = dist(cap, sh) / Ls, (dist(cap, sh) + L1) / Ls
