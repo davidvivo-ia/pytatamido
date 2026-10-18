@@ -831,8 +831,9 @@ class Match:
         for f in order:
             draw_trail(fig, f, self.cam)        # las estelas van detrás de los cuerpos
         cfg = dict(self.cfg, shadows=False)
+        pieces: list = []
         for f in order:
-            draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd)
+            draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd, pieces=pieces)
         self.fx.draw_world(fxl, self.cam, fxl)
         self.dojo.draw_rain(fxl)
         extra = {}
@@ -846,6 +847,7 @@ class Match:
             extra["impact"] = 0.0
         if not self.access.get("shake", True):
             extra["tilt"] = 0.0
+        extra["pieces"] = pieces
         return scene_params(self.dojo, self.cam, self.f, self.fx, self.cfg, extra)
 
     def draw_hud(self, surf, fonts: Fonts):

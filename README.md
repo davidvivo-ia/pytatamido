@@ -47,10 +47,27 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   iluminado, como un entintador a pincel.
 - **Rostro diseñado:** ojo con iris del color de cada ficha, pupila y brillo, párpado superior grueso,
   cejas de pincel, nariz y rubor; puños cerrados con nudillos y manos abiertas con dedos para el agarre.
-- **Texturas procedurales por material (GPU):** trama de grano de arroz y hilos gruesos del algodón,
-  poros y moteado cálido de la piel, vetas anisótropas del satén y la lycra, granulado y craquelado del
-  cuero, hebras del pelo. Están ancladas al luchador, modulan color y brillo, inclinan la normal para
-  que la luz rasante saque el grano y se funden a su media cuando el detalle baja de un píxel (sin moiré).
+- **Tejidos diseñados, pieza a pieza (GPU):** el mapa de datos guarda en cada píxel el número de su
+  pieza, y una tabla por fotograma da a la GPU el ancla, el eje, la escala, el material y el tejido de
+  cada una. Así cada píxel sabe dónde está *dentro* de su manga, pernera, mechón o cinturón, en
+  centímetros y orientado a lo largo de la pieza. Los tejidos siguen al miembro, giran con él y no
+  resbalan; brazos y piernas se parten por el codo y la rodilla para que cada tramo lleve el suyo.
+  Cada prenda tiene su tejido: grano de arroz acolchado del judogi de Haruki y Tito, lona de cesta del
+  karategi de Inés y de la kurtka de Tomasz, sarga del dobok y de las perneras, damasco de seda con
+  medallones tono sobre tono en el changshan de Lin, lino con hilos irregulares en el keikogi de Okabe,
+  canalé en la camiseta de Matías, satén y lycra con pliegues que atrapan la luz, seda acanalada del
+  mawashi, cuero con arrugas y cantos gastados, neopreno con canales, pespuntes en solapas y cinturones,
+  y el cinturón negro de Haruki gastado hasta dejar ver el alma clara. El pelo se peina en mechones y
+  hebras con un anillo de brillo que en el pelo negro es azulado y contenido.
+- **Luz pintada:** el borde de la sombra se pinta con pinceladas que corren a lo largo de cada pieza y
+  la sombra lleva trama; la seda, el satén y el pelo tienen brillos anisótropos en vetas, teñidos de su
+  color; el algodón tiene pelusa a contraluz; la piel recibe menos saturación bajo luz cálida, rojeces en
+  rodillas, codos y nudillos y un brillo graso suave; un relieve amplio redondea los cuerpos hacia la
+  silueta y un degradado de ilustración enfría los pies y calienta la cabeza. Todo detalle se funde a su
+  media antes de bajar de un píxel, sin moiré.
+
+![Tejidos de cerca: judogi, damasco de seda, satén thai, lycra, cuero y neopreno](docs/09_tejidos.jpg)
+
 - **Iluminación por píxel de los sprites (renderer GPU):** cada luchador se dibuja dos veces, en color
   plano y en un mapa de altura y material. La GPU deriva normales de ese relieve y los ilumina con la luz
   real de cada asalto: piel con dispersión subsuperficial (borde de sombra cálido) y brillo del sudor,

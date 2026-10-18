@@ -245,89 +245,218 @@ vec3 shadeFloor(vec2 p, out float coc) {
 // 0 tinta · 1 piel · 2 algodón · 3 satén/lycra · 4 cuero · 5 pelo · 6 ojos
 float figH(vec2 q) { return Lp(tFigD, q, 1.0).r * 0.5 + Lp(tFigD, q, 2.3).r * 0.5; }
 
-// ── texturas procedurales por material ──────────────────────────────────────
-// Coordenadas en cm, ancladas a la raíz del luchador más cercano (no resbalan al moverse por el
-// tatami). Cada patrón devuelve una altura h: modula el albedo y, derivada en pantalla, inclina la
-// normal para que la luz rasante saque el grano. Todo se funde a su media cuando el detalle es
-// más fino que un píxel (sin moiré).
-float aaFade(vec2 q, float period) { float w = max(fwidth(q.x), fwidth(q.y)) / period; return 1. - clamp(w * 1.6 - 0.4, 0., 1.); }
+// ── tejidos diseñados, en el espacio propio de cada pieza ────────────────────
+// El mapa de datos guarda en G el número de pieza; tPieces trae su ancla en pantalla, su eje, los
+// px por cm, el material, el tejido, una semilla y el ancho. Con eso cada píxel sabe dónde está
+// dentro de su pieza en cm (q.x a lo largo, q.y a través): el tejido sigue a la manga, a la pernera
+// o al mechón, no resbala aunque el miembro se mueva y gira con él. Cada patrón da una altura (relieve
+// para la luz), un factor de albedo, un factor de brillo y, en el cinturón gastado, desgaste.
+// Todo detalle se funde a su media antes de llegar al tamaño de un píxel.
+uniform sampler2D tPieces;
 
-float matTex(vec2 p, int mat, out float albK, out float specK) {
-    float s = uCam.y * 0.95;
-    vec4 f = abs(p.x - uFighters[0].x) < abs(p.x - uFighters[1].x) ? uFighters[0] : uFighters[1];
-    vec2 q = (p - vec2(f.x, f.y - f.z)) / s;
-    albK = 1.; specK = 1.;
-    float h = 0.;
-    if (mat == 2) {                                  // algodón: trama de grano de arroz + hilos gruesos
-        float a = aaFade(q, 0.5);
-        vec2 c = q / vec2(0.42, 0.34);
-        vec2 cell = floor(c);
-        vec2 fc = fract(c + vec2(mod(cell.y, 2.) * 0.5, 0.)) - 0.5;
-        float grain = 1. - smoothstep(0.18, 0.5, length(fc * vec2(1.0, 1.7)));
-        float slub = vnoise(q * vec2(0.35, 2.6)) * vnoise(q * vec2(1.7, 0.25) + 9.);
-        h = (grain - 0.5) * a + (slub - 0.25) * 0.9;
-        albK = 1. + 0.07 * (grain - 0.5) * a + 0.1 * (slub - 0.25) - 0.04 * fbm(q * 0.18);
-    } else if (mat == 1) {                           // piel: moteado cálido + poros
-        float a = aaFade(q, 0.35);
-        float mott = fbm(q * 0.28);
-        float pore = vnoise(q * 3.1);
-        h = (pore - 0.5) * 0.35 * a + (mott - 0.5) * 0.3;
-        albK = 1. + 0.08 * (mott - 0.5) - 0.03 * smoothstep(0.62, 0.8, pore) * a;
-        specK = 0.75 + 0.5 * pore;
-    } else if (mat == 3) {                           // satén y lycra: vetas anisótropas verticales
-        float a = aaFade(q, 0.3);
-        float st = vnoise(vec2(q.x * 2.2, q.y * 0.1)) * 0.7 + vnoise(vec2(q.x * 7.0, q.y * 0.25)) * 0.3 * a;
-        h = (st - 0.5) * 0.25;
-        albK = 0.98 + 0.04 * st;
-        specK = 0.6 + 0.8 * st;
-    } else if (mat == 4) {                           // cuero: granulado y craquelado
-        float a = aaFade(q, 0.4);
-        float g1 = vnoise(q * 1.6);
-        float cr = (1. - smoothstep(0.015, 0.06, abs(fbm(q * 0.6) - 0.5))) * a;
-        h = (g1 - 0.5) * 0.25 * a - cr * 0.3;
-        albK = 1. - 0.1 * cr - 0.04 * (g1 - 0.5) * a;
-        specK = 0.85 + 0.3 * g1 - 0.4 * cr;
-    } else if (mat == 5) {                           // pelo: hebras finas a lo largo de la caída
-        float a = aaFade(q, 0.25);
-        float sx = q.x + 0.6 * vnoise(q * vec2(0.2, 0.5));
-        float st = vnoise(vec2(sx * 4.5, q.y * 0.3)) * 0.65 + vnoise(vec2(sx * 12., q.y * 0.7)) * 0.35 * a;
-        h = (st - 0.5) * 0.6;
-        albK = 0.9 + 0.2 * st;
-        specK = 0.4 + 1.2 * st * st;
+float bump1(float x) { return sin(3.14159265 * fract(x)); }          // cresta redonda por periodo
+float vis(float P, float pxcm) { return smoothstep(1.7, 3.6, P * pxcm); }
+
+// caída de la tela: pliegues suaves que corren a lo largo de la pieza, a ratos más marcados
+float drape(vec2 q, float seed, float sc) {
+    float warp = (vnoise(vec2(q.x * 0.06 / sc + seed, 1.7)) - 0.5) * 1.6;
+    float u = q.y / (2.6 * sc) + warp;
+    float n = vnoise(vec2(u, seed * 0.7 + q.x * 0.025 / sc));      // ondulación irregular, no rayas
+    float n2 = vnoise(vec2(u * 2.3 + 5., seed + q.x * 0.04 / sc));
+    return smoothstep(0.12, 0.88, n * 0.72 + n2 * 0.28);
+}
+
+void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out float ak, out float sk, out float wear) {
+    h = 0.; ak = 1.; sk = 1.; wear = 0.;
+    if (pat == 1) {                                  // judogi: grano de arroz acolchado, hileras al tresbolillo
+        vec2 c = q / vec2(1.2, 0.8);
+        float row = floor(c.y);
+        c.x += mod(row, 2.) * 0.5;
+        vec2 f = fract(c) - 0.5;
+        float grain = 1. - smoothstep(0.22, 0.5, length(f * vec2(1., 1.25)));
+        float v = vis(0.8, pxcm);
+        float t = hash12(floor(c) + seed);
+        float zone = 0.55 + 0.45 * smoothstep(0.3, 0.7, vnoise(q * 0.07 + seed));   // el grano se marca más donde tira la tela
+        h = (grain * grain * 0.5 - 0.18) * v * zone + drape(q, seed, 1.25) * 0.9;
+        ak = 1. + v * zone * (0.09 * grain - 0.05 + 0.03 * (t - 0.5));
+        sk = mix(1., 0.55 + 0.6 * grain, v);
+    } else if (pat == 2) {                           // sarga: costillas en diagonal
+        float wale = bump1((q.x * 0.7 + q.y) / 1.1);
+        float v = vis(1.1, pxcm);
+        h = wale * 0.35 * v + drape(q, seed, 1.0) * 0.85;
+        ak = 1. + v * (0.08 * wale - 0.04);
+    } else if (pat == 3) {                           // lona de cesta: parejas de hilos que alternan
+        vec2 c = q / 1.6;
+        vec2 ci = floor(c), f = fract(c);
+        float u = mod(ci.x + ci.y, 2.) < 0.5 ? f.y : f.x;
+        float rib = bump1(u * 2.);
+        float e = smoothstep(0., 0.12, min(min(f.x, 1. - f.x), min(f.y, 1. - f.y)));
+        float v = vis(0.8, pxcm);
+        h = (rib * e * 0.45 - 0.2) * v + drape(q, seed, 1.5) * 0.8;
+        ak = 1. + v * (0.11 * rib * e - 0.06);
+    } else if (pat == 4) {                           // punto de canalé
+        float y = q.y / 0.9;
+        float rib = bump1(y);
+        float v = vis(0.9, pxcm);
+        h = rib * 0.4 * v + drape(q, seed, 0.8) * 0.6;
+        ak = 1. + v * (0.08 * rib - 0.04);
+    } else if (pat == 5) {                           // damasco de seda: medallones tono sobre tono
+        vec2 c = q / 8.;
+        c.x += mod(floor(c.y), 2.) * 0.5;
+        vec2 f = (fract(c) - 0.5) * 8.;
+        float r = length(f);
+        float th = atan(f.y, f.x);
+        float ring = 1. - smoothstep(0.12, 0.3, abs(r - 2.7));
+        float petal = smoothstep(0.4, 0.8, 0.5 + 0.5 * cos(4. * th)) * smoothstep(0.5, 0.9, r) * (1. - smoothstep(1.6, 2.1, r));
+        float dotc = 1. - smoothstep(0.35, 0.55, r);
+        vec2 g = abs(fract(c + 0.5) - 0.5) * 8.;
+        float dia = 1. - smoothstep(0.55, 0.8, g.x + g.y);
+        float motif = max(max(ring, petal), max(dotc, dia));
+        float v = vis(0.6, pxcm);
+        h = motif * 0.18 * v + drape(q, seed, 1.0) * 0.75;
+        ak = 1. + 0.5 * motif * v;
+        sk = 0.6 + 2.0 * motif * v;
+    } else if (pat == 6) {                           // lino: hilos irregulares con nudos (slubs)
+        float rc = q.x / 1.1;
+        float ri = floor(rc);
+        float thread = pow(max(bump1(rc), 0.), 0.6 + 0.8 * hash12(vec2(ri, seed)));
+        float slub = smoothstep(0.55, 0.8, vnoise(vec2(ri * 3.7, q.y * 0.22 + seed)));
+        float warp = bump1(q.y / 1.3);
+        float v = vis(1.1, pxcm);
+        h = (thread * 0.35 + warp * 0.12 + slub * 0.3) * v + drape(q, seed, 1.3) * 0.75;
+        ak = 1. + v * (0.1 * (hash12(vec2(ri, seed + 3.)) - 0.5) + 0.06 * slub - 0.05 * (1. - thread));
+    } else if (pat == 7 || pat == 16) {              // cinturón: pespuntes paralelos a lo largo
+        float rows = q.y / 0.7;
+        float line = 1. - smoothstep(0.06, 0.2, abs(fract(rows) - 0.5));
+        float fx = fract(q.x / 0.9);
+        float dash = smoothstep(0.12, 0.28, fx) * (1. - smoothstep(0.72, 0.88, fx));
+        float v = vis(0.7, pxcm);
+        h = (bump1(rows) * 0.18 - line * (0.35 + 0.3 * dash)) * v;
+        ak = 1. - 0.2 * line * v;
+        sk = 1. - 0.5 * line * v;
+        if (pat == 16) {                             // cinturón negro gastado: asoma el alma clara
+            float n = fbm(vec2(q.x * 0.33, q.y * 1.15) + seed);
+            float edge = smoothstep(wcm * 0.22, wcm * 0.5, abs(q.y));
+            wear = 0.8 * smoothstep(0.52, 0.74, n + edge * 0.3);
+        }
+    } else if (pat == 8) {                           // satén y lycra: grandes pliegues que atrapan la luz
+        h = drape(q, seed, 1.7) * 1.1;
+    } else if (pat == 9) {                           // mawashi: seda gruesa acanalada
+        float rib = pow(max(bump1(q.y / 1.7), 0.), 0.6);
+        float v = vis(1.7, pxcm);
+        h = rib * 0.5 * v + drape(q, seed, 2.5) * 0.12;
+        ak = 1. + v * (0.16 * rib - 0.1);
+        sk = 0.6 + 0.8 * rib;
+    } else if (pat == 10) {                          // cuero: arrugas transversales y granulado
+        float cr = sin(6.2831853 * (q.x / 2.6 + 0.35 * vnoise(q * 0.45 + seed)));
+        float crease = smoothstep(0.8, 0.98, cr) * smoothstep(0.35, 0.6, vnoise(vec2(q.x * 0.18, q.y * 0.35) + seed * 2.));
+        float peb = vnoise(q * 1.9 + seed);
+        float v = vis(0.55, pxcm);
+        h = -crease * 0.6 + (peb - 0.5) * 0.25 * v;
+        ak = 1. - 0.2 * crease;
+        sk = 1. - 0.6 * crease + 0.3 * (peb - 0.5) * v;
+    } else if (pat == 11) {                          // neopreno con canales
+        float rib = bump1(q.x / 1.3);
+        float v = vis(1.3, pxcm);
+        h = rib * 0.6 * v;
+        ak = 1. + v * (0.16 * rib - 0.1);
+        sk = 0.5;
+    } else if (pat == 12) {                          // pelo: mechones y hebras que siguen la caída
+        float s = q.y + 1.2 * (vnoise(vec2(q.x * 0.16, seed)) - 0.5);
+        float ci = floor(s / 0.95);
+        float clump = bump1(s / 0.95);
+        float fine = 0.5 + 0.5 * sin(6.2831853 * s / 0.38 + hash12(vec2(ci, seed)) * 6.);
+        float v = vis(0.95, pxcm), v2 = vis(0.38, pxcm);
+        h = clump * 0.55 * v + fine * 0.12 * v2;
+        ak = 1. + v * (0.24 * clump - 0.13 + 0.14 * (hash12(vec2(ci, seed + 1.3)) - 0.5)) + v2 * 0.06 * (fine - 0.5);
+        sk = 0.4 + 1.0 * clump;
+    } else if (pat == 14) {                          // solapa: tres pespuntes a lo largo
+        float a = abs(q.y) / (max(wcm, 0.5) * 0.5);
+        float rows = a * 3.;
+        float fx = fract(q.x / 0.8);
+        float dash = smoothstep(0.1, 0.25, fx) * (1. - smoothstep(0.7, 0.85, fx));
+        float line = (1. - smoothstep(0.06, 0.22, abs(fract(rows) - 0.5))) * step(a, 0.95) * dash;
+        float v = vis(max(wcm, 0.5) / 3., pxcm);
+        h = (bump1(rows) * 0.25 - line * 0.5) * v;
+        ak = 1. - 0.15 * line * v;
+    } else if (pat == 15) {                          // algodón de tafetán
+        float wv = bump1(q.x / 0.9) * bump1(q.y / 0.9);
+        float v = vis(0.9, pxcm);
+        h = wv * 0.25 * v + drape(q, seed, 1.1) * 0.8;
+        ak = 1. + v * (0.05 * wv - 0.025);
     }
-    return h;
 }
 
 vec3 litFighter(vec2 p, vec4 fg) {
     vec3 alb = toLin(fg.rgb);
+    int id = int(texelFetch(tFigD, ivec2(p), 0).g * 255. + 0.5);
+    if (id == 0) return alb * uTint;                       // tinta: el contorno no se ilumina
     vec4 fd = Lp(tFigD, p);
-    int mat = int(fd.g * 255. / 36. + 0.5);
-    if (mat == 0) return alb * uTint;                       // tinta: el contorno no se ilumina
+    vec4 P0 = texelFetch(tPieces, ivec2(id, 0), 0);
+    vec4 P1 = texelFetch(tPieces, ivec2(id, 1), 0);
+    int mat = int(P1.x + 0.5);
+    int pat = int(P1.y + 0.5);
+    float seed = P1.z, wcm = P1.w;
+    float pxcm = max(P0.w, 0.05);
+    vec2 t = vec2(cos(P0.z), sin(P0.z));
+    vec2 nn = vec2(-t.y, t.x);
+    vec2 dd = p - P0.xy;
+    vec2 q = vec2(dot(dd, t), dot(dd, nn)) / pxcm;         // cm dentro de la pieza
+
     float e = 2.0;
     float hx = figH(p + vec2(e, 0.)) - figH(p - vec2(e, 0.));
     float hy = figH(p + vec2(0., e)) - figH(p - vec2(0., e));
     float bump = mat == 5 ? 5.0 : 7.0;
-    float albK, specK;
-    float th = matTex(p, mat, albK, specK) * uTexI;
-    alb *= mix(1., albK, uTexI);
-    vec2 tg = vec2(dFdx(th), -dFdy(th));                   // relieve del grano, en espacio de pantalla
-    float tb = mat == 2 ? 0.55 : mat == 4 ? 0.3 : mat == 5 ? 0.45 : 0.3;
-    vec3 N = normalize(vec3(-hx * bump - tg.x * tb, hy * bump - tg.y * tb, 1.0));
+    // forma amplia: la altura muy desenfocada redondea brazos, piernas y torso hacia la silueta
+    float e2 = 6.0;
+    float bx = Lp(tFigD, p + vec2(e2, 0.), 3.6).r - Lp(tFigD, p - vec2(e2, 0.), 3.6).r;
+    float by = Lp(tFigD, p + vec2(0., e2), 3.6).r - Lp(tFigD, p - vec2(0., e2), 3.6).r;
+    float formK = 2.6;
+    vec3 N0 = normalize(vec3(-hx * bump - bx * formK, hy * bump + by * formK, 1.0));
+    // tejido: valor y pendiente (diferencias de medio píxel), girada de la pieza a la pantalla
+    float h, ak, sk, wear, h1, h2, a_, s_, w_;
+    weave(pat, q, pxcm, seed, wcm, h, ak, sk, wear);
+    float es = 0.6 / pxcm;
+    weave(pat, q + vec2(es, 0.), pxcm, seed, wcm, h1, a_, s_, w_);
+    weave(pat, q + vec2(0., es), pxcm, seed, wcm, h2, a_, s_, w_);
+    vec2 gq = vec2(h1 - h, h2 - h) / es;
+    vec2 gs = (t * gq.x + nn * gq.y) / pxcm * uTexI;
+    float tb = mat == 4 ? 0.5 : mat == 5 ? 0.55 : 0.7;
+    vec3 N = normalize(vec3(-hx * bump - bx * formK - gs.x * tb, hy * bump + by * formK + gs.y * tb, 1.0));
+    alb *= mix(1., ak, uTexI);
+    if (wear > 0.) {
+        float fib = 0.75 + 0.25 * bump1(q.y / 0.35 + 0.3 * q.x);
+        alb = mix(alb, vec3(0.34, 0.32, 0.29) * fib, wear * uTexI);
+    }
+    if (mat == 4) alb *= 1. + 0.45 * smoothstep(0.3, 0.62, 1. - N0.z) * uTexI;     // cuero gastado en los cantos
+
     float ao = 1. - clamp((Lp(tFigD, p, 4.2).r - fd.r) * 2.2, 0., 0.5);
     vec3 V = vec3(0., 0., 1.);
     vec3 L = normalize(uKey3);
     vec3 Hv = normalize(L + V);
-    float spec = fd.b * mix(1., specK, uTexI);
+    float spec = fd.b * mix(1., sk, uTexI);
     float ndl = dot(N, L);
-    // ── rampa de dos tonos (anime 2026): borde definido y suave, sombra de color desplazado ──
-    float soft = mat == 1 ? 0.16 : 0.1;
-    float lit = smoothstep(-0.08 - soft, -0.08 + soft, ndl) * mix(1.0, ao, 0.6);
+    // pincelada: el borde de la sombra se pinta a lo largo de la forma y la sombra lleva trama
+    float paint = mat == 6 ? 0. : uTexI;
+    float br = vnoise(vec2(q.x * 0.2, q.y * 1.05) + seed * 3.1);
+    float br2 = vnoise(vec2(q.x * 0.45, q.y * 2.1) + seed * 5.7) * vis(0.5, pxcm);
+    // ── rampa de dos tonos (anime 2026): borde pintado, sombra de color desplazado ──
+    float soft = mat == 1 ? 0.15 : 0.09;
+    float term = ndl + paint * ((br - 0.5) * 0.32 + (br2 - 0.25) * 0.14);
+    float lit = smoothstep(-0.08 - soft, -0.08 + soft, term) * mix(1.0, ao, 0.6);
     vec3 amb = mix(uBounce, uSky, N.y * 0.5 + 0.5) * ao;
     vec3 shTint = mat == 1 ? vec3(1.06, 0.74, 0.68) : mat == 5 ? vec3(0.9, 0.86, 1.05) : vec3(0.84, 0.9, 1.08);
-    vec3 shadowCol = alb * (amb * 1.15 + uKey * 0.1) * shTint;
+    vec3 shadowCol = alb * (amb * 1.15 + uKey * 0.1) * shTint * (1. + paint * 0.16 * (br - 0.5));
     vec3 litCol = alb * (amb + uKey * (0.82 + 0.18 * max(ndl, 0.)));
     vec3 col = mix(shadowCol, litCol, lit);
-    if (mat == 1) col += alb * uKey * vec3(1.0, 0.3, 0.16) * 1.2 * lit * (1. - lit);   // dispersión en el borde de sombra
+    if (mat == 1) {
+        col += alb * uKey * vec3(1.0, 0.3, 0.16) * 1.0 * lit * (1. - lit);              // dispersión en el borde de sombra
+        col = mix(col, vec3(luma(col)) * vec3(1.02, 0.98, 0.97), 0.2 * uTexI);           // luz cálida sobre piel cálida: sin plástico
+        // rojeces: la sangre asoma donde la piel es fina, en los extremos de cada miembro (rodilla, codo, nudillos)
+        float ends = smoothstep(0.55, 0.95, abs(q.x) / max(wcm * 1.6, 4.));
+        col *= mix(vec3(1.), vec3(1.06, 0.93, 0.92), ends * 0.6 * uTexI);
+    }
+    if (mat == 2) col += alb * uKey * 0.2 * pow(1. - N.z, 2.) * lit;                     // pelusa del algodón a contraluz
     // farolillos: luces puntuales con la misma rampa
     vec3 P3 = vec3(p.x, -p.y, 0.);
     float lanHi = 0.;
@@ -339,22 +468,35 @@ vec3 litFighter(vec2 p, vec4 fg) {
         vec3 Ld = d / r;
         float att = l.w * 160000. / (r * r + 40000.);
         float ramp = smoothstep(-0.12, 0.12, dot(N, Ld));
-        col += alb * uLan * att * ramp * 0.6;
+        col += alb * uLan * att * ramp * (mat == 1 ? 0.45 : 0.6);
         lanHi += att * smoothstep(0.94, 0.975, dot(N, normalize(Ld + V)));
     }
-    // brillos duros por material
-    float nh = dot(N, Hv);
+    // brillos duros por material; satén, seda y pelo en vetas anisótropas a lo largo de la pieza
+    vec3 T3 = normalize(vec3(t.x, -t.y, 0.0));
+    vec3 Na = normalize(N - T3 * dot(N, T3) * 0.9);
+    float nh = dot(N, Hv), nha = dot(Na, Hv);
     float hi = 0.;
-    if (mat == 1) hi = smoothstep(0.955, 0.985, nh) * (0.08 + 0.85 * spec);                       // sudor
-    else if (mat == 3) hi = smoothstep(0.8, 0.9, nh) * 0.45 + pow(1. - N.z, 3.) * 0.15;          // satén y lycra
+    if (mat == 1) hi = smoothstep(0.955, 0.985, nh) * (0.06 + 0.5 * spec) + smoothstep(0.86, 0.97, nh) * 0.04 * (0.6 + br);   // sudor y brillo graso
+    else if (mat == 3) hi = smoothstep(0.84, 0.96, nha) * (pat == 9 ? 0.18 : 0.4) * mix(1., sk, uTexI) + pow(1. - N.z, 3.) * 0.1;
     else if (mat == 4) hi = smoothstep(0.9, 0.97, nh) * 0.7 * spec;                                     // cuero
-    else if (mat == 5) hi = smoothstep(0.86, 0.93, dot(normalize(N + vec3(0., 0.55, 0.)), Hv)) * (0.3 + 0.4 * spec);   // anillo del pelo
-    else if (mat == 2) hi = smoothstep(0.62, 0.72, 1. - N.z) * 0.12;                             // fibra del algodón
-    col += (uKey * lit + uLan * uLanI * 0.4) * hi + uLan * lanHi * (mat == 1 || mat == 4 ? 0.6 : 0.15);
+    else if (mat == 5) {                                                                           // anillo del pelo
+        float band = smoothstep(0.9, 0.975, dot(normalize(Na + vec3(0., 0.35, 0.)), Hv)) * mix(1., sk, uTexI);
+        hi = band * (0.12 + 0.3 * spec) * (0.3 + 2.2 * sqrt(luma(alb)));        // en pelo negro, brillo azulado y contenido
+    }
+    else if (mat == 2) hi = smoothstep(0.62, 0.72, 1. - N.z) * 0.1 + (pat == 5 ? smoothstep(0.8, 0.94, nha) * 0.35 * sk : 0.);
+    vec3 hue = alb / max(max(alb.r, alb.g), max(alb.b, 1e-3));
+    vec3 hiCol = mat == 5 ? mix(vec3(0.62, 0.72, 1.0) * luma(uKey) * 1.3, uKey, clamp(luma(alb) * 3., 0., 1.))
+               : mat == 3 || pat == 5 || pat == 9 ? uKey * mix(vec3(1.), hue, 0.65)          // la seda tiñe su brillo
+               : uKey;
+    col += (hiCol * lit + uLan * uLanI * 0.4) * hi + uLan * lanHi * (mat == 1 ? 0.22 : mat == 4 ? 0.6 : mat == 5 ? 0.05 : 0.15);
     // contraluz recortado: shōji del lado de la luz, farolillos desde arriba
     float rimM = smoothstep(0.5, 0.62, 1. - N.z);
     col += uKey * uRimI * 0.55 * rimM * smoothstep(0.1, 0.5, dot(normalize(N.xy + 1e-4), normalize(L.xy + 1e-4)));
     col += uLan * uLanI * 0.6 * rimM * smoothstep(0.2, 0.7, N.y);
+    // degradado de ilustración: los pies se enfrían y oscurecen un poco, la cabeza recibe la luz
+    vec4 fr = abs(p.x - uFighters[0].x) < abs(p.x - uFighters[1].x) ? uFighters[0] : uFighters[1];
+    float hgt = clamp((fr.y - fr.z - p.y) / (pxcm * 175.), 0., 1.);
+    col *= mix(vec3(0.86, 0.9, 1.0), vec3(1.04, 1.0, 0.97), smoothstep(0.0, 0.9, hgt));
     return col * uTint;
 }
 
@@ -709,6 +851,9 @@ class GPURenderer:
         self.t_fig = tex((W, H), mip=True)
         self.t_fx = tex((W, H))
         self.t_figd = tex((W, H), mip=True)
+        self.t_pieces = ctx.texture((256, 2), 4, dtype="f4")        # tabla de piezas: ancla, eje, material, tejido
+        self.t_pieces.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self._pieces = np.zeros((2, 256, 4), dtype="f4")
         self._figd_blank = None
         self.t_hud = tex((W, H))
         self.t_scene = tex((W, H), dtype="f2")
@@ -794,6 +939,13 @@ class GPURenderer:
         self._upload(self.t_fig, fig, mip=True)
         if figd is not None:
             self._upload(self.t_figd, figd, mip=True)
+            pcs = p.get("pieces") or []
+            arr = self._pieces
+            arr[:] = 0.0
+            for i, pc in enumerate(pcs[:254]):
+                arr[0, i + 1] = pc[0:4]
+                arr[1, i + 1] = pc[4:8]
+            self.t_pieces.write(arr.tobytes())
         self._upload(self.t_fx, fx)
         self._upload(self.t_hud, hud)
         S = self._set
@@ -801,7 +953,7 @@ class GPURenderer:
 
         # 1) escena HDR
         pr = self.p_scene
-        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd)
+        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd, tPieces=self.t_pieces)
         S(pr, "uRes", (float(W), float(H)))
         S(pr, "uTime", self.t)
         S(pr, "uFigLit", 1.0 if figd is not None else 0.0)

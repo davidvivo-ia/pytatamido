@@ -299,18 +299,32 @@ def lock_pts(base, ctrl, tip, w0):
 class Figure:
     """Lista de piezas. Cada pieza recuerda su material (para la luz de la GPU) y si es un surco."""
     MATS = {"ink": 0, "skin": 1, "cloth": 2, "satin": 3, "leather": 4, "hair": 5, "eye": 6}
+    # Tejidos diseñados (los pinta la GPU en el espacio propio de cada pieza, orientados a su eje)
+    PATS = {"plain": 0, "judo": 1, "twill": 2, "canvas": 3, "knit": 4, "damask": 5, "linen": 6, "belt": 7,
+            "satin": 8, "rib": 9, "leather": 10, "neoprene": 11, "hair": 12, "skin": 13, "stitch": 14,
+            "cotton": 15, "belt_worn": 16}
+    MAT_PAT = {"skin": "skin", "cloth": "cotton", "satin": "satin", "leather": "leather", "hair": "hair"}
 
     def __init__(self):
         self.parts: List[tuple] = []
+        self.pats: List[int] = []
         self.mat = "cloth"
+        self.pat = "cotton"
         self.groove = False
+        self.zone_pat: dict = {}
 
-    def m(self, mat, groove=False):
+    def zone(self, **pats):
+        """Tejido por material para la zona que se dibuja (prenda de arriba, de abajo, cabeza...)."""
+        self.zone_pat = pats
+
+    def m(self, mat, groove=False, pat=None):
         self.mat = mat
         self.groove = groove
+        self.pat = pat or self.zone_pat.get(mat) or self.MAT_PAT.get(mat, "plain")
 
     def _add(self, g, kind, geo, color, outline, shade_, sheen, edge, groove=False):
         self.parts.append((g, kind, geo, color, outline, shade_, sheen, edge, self.mat, groove))
+        self.pats.append(self.PATS[self.pat])
 
     def tube(self, g, a, b, ra, rb, color, bulge=0.0, bt=0.45, side=0.0, outline=True, shade_=True, sheen=1.0, edge=False):
         self._add(g, "tube", (a, b, ra, rb, bulge, bt, side), color, outline, shade_, sheen, edge)
@@ -523,17 +537,51 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
 GROUP_H = {0: 46, 1: 66, 2: 106, 3: 126, 4: 150, 5: 176, 6: 210}
 
 
-def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0):
-    """Mapa de datos para la luz por píxel: R altura, G material, B brillo.
+def _axis(P):
+    """Centro y eje principal (análisis de componentes) de una nube de puntos; ancho menor en px."""
+    n = len(P)
+    cx = sum(q[0] for q in P) / n
+    cy = sum(q[1] for q in P) / n
+    sxx = syy = sxy = 0.0
+    for x, y in P:
+        dx, dy = x - cx, y - cy
+        sxx += dx * dx
+        syy += dy * dy
+        sxy += dx * dy
+    sxx, syy, sxy = sxx / n, syy / n, sxy / n
+    ang = 0.5 * math.atan2(2 * sxy, sxx - syy)
+    tr, det = sxx + syy, sxx * syy - sxy * sxy
+    lmin = max(0.0, tr * 0.5 - math.sqrt(max(0.0, tr * tr * 0.25 - det)))
+    return (cx, cy), ang, 3.4 * math.sqrt(lmin)
+
+
+def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_base=1, pieces=None):
+    """Mapa de datos para la luz por píxel: R altura, G pieza, B brillo.
 
     Cada grupo de profundidad tiene su altura base; cada pieza añade una cúpula interior y los
     surcos (músculos, pliegues, nudillos) la rebajan. La GPU deriva normales de esta altura.
+    G identifica la pieza (0 = tinta): `pieces` recibe su ancla, eje, material y tejido para que la GPU
+    pinte el tejido en el espacio propio de cada pieza, orientado a lo largo de ella y sin resbalar.
+    Las cintas (brazos, piernas) se parten en dos piezas por la articulación central.
     """
     groups: Dict[int, list] = {}
     for idx, p in enumerate(fig.parts):
         groups.setdefault(p[0], []).append((idx, p))
     M = Figure.MATS
     cache: dict = {}
+    if pieces is None:
+        pieces = []
+    state = {"last": 0}
+
+    def piece(anchor, ang, w_px, mat, pat, idx):
+        pid = id_base + len(pieces)
+        if pid > 254:                     # sin hueco en la tabla: hereda la última pieza
+            return state["last"]
+        seed = math.fmod(idx * 0.6180339 + id_base * 0.1372, 1.0) * 37.0
+        pieces.append((anchor[0], anchor[1], ang, k, float(M.get(mat, 2)), float(pat), seed, w_px / max(1e-6, k)))
+        state["last"] = pid
+        return pid
+
     for g in sorted(groups):
         ps = groups[g]
         h0 = GROUP_H.get(g, 120)
@@ -549,25 +597,67 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0):
                 (P, U, Nn), radii = shared[idx]
                 cache[idx] = (([(x * inv, y * inv) for x, y in P], U, Nn), radii)
         for idx, (_, kind, geo, col, outline, shd, sheen, edge, mat, groove) in ps:
-            mid = M.get(mat, 2) * 36
+            pat = fig.pats[idx]
             spec = int(clamp(sheen * 55, 0, 255))
-            base = (h0, mid, spec)
-            dome = (min(255, h0 + 18), mid, spec)
             pf = shared.get(("f", idx)) if shared is not None else None
-            if pf is not None and kind in ("tube", "ribbon"):
-                pygame.draw.polygon(surf, base, [(x * inv, y * inv) for x, y in pf])     # misma silueta que el albedo
-            if kind == "tube":
+            pid2 = None
+            if groove:
+                pid = state["last"]
+            elif kind == "tube":
                 a, b, ra, rb, bu, bt, side = geo
                 A, B = T(a), T(b)
-                if pf is None:
+                pid = piece(_lerp2(A, B, 0.5), math.atan2(B[1] - A[1], B[0] - A[0]), (ra + rb) * k, mat, pat, idx)
+            elif kind == "ribbon":
+                frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
+                P = frame[0]
+                nC = len(geo[0])
+                mcut = (nC - 2) * 6 if nC >= 3 else None
+                segs = [(0, mcut), (mcut, len(P) - 1)] if mcut else [(0, len(P) - 1)]
+                ids = []
+                for i0, i1 in segs:
+                    sub = P[i0:i1 + 1]
+                    cx = sum(q[0] for q in sub) / len(sub)
+                    cy = sum(q[1] for q in sub) / len(sub)
+                    ang = math.atan2(P[i1][1] - P[i0][1], P[i1][0] - P[i0][0])
+                    rr = (kl[(i0 + i1) // 2] + kr[(i0 + i1) // 2]) * k
+                    ids.append(piece((cx, cy), ang, rr, mat, pat, idx + 1000 * len(ids)))
+                pid = ids[0]
+                pid2 = (ids[1], mcut, len(P)) if len(ids) > 1 else None
+            elif kind == "poly":
+                anchor, ang, wpx = _axis([T(q) for q in geo])
+                pid = piece(anchor, ang, wpx, mat, pat, idx)
+            elif kind in ("circle", "dot"):
+                c, r = geo
+                pid = piece(T(c), 0.0, 2 * r * k, mat, pat, idx)
+            else:                                                 # pincelada
+                pts, w, closed, taper = geo
+                A, B = T(pts[0]), T(pts[-1])
+                pid = piece(_lerp2(A, B, 0.5), math.atan2(B[1] - A[1], B[0] - A[0]), w * k, mat, pat, idx)
+            base = (h0, pid, spec)
+            dome = (min(255, h0 + 18), pid, spec)
+
+            def split_draw(pts, h):
+                """Cinta: el polígono entero con la pieza de arriba y la mitad baja con la de abajo."""
+                pygame.draw.polygon(surf, (h, pid, spec), pts)
+                if pid2 is not None:
+                    id2, m_, n_ = pid2
+                    low = pts[m_:2 * n_ + 4 - m_]
+                    if len(low) >= 3:
+                        pygame.draw.polygon(surf, (h, id2, spec), low)
+
+            if kind == "ribbon":
+                frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
+                split_draw([(x * inv, y * inv) for x, y in pf] if pf is not None else ribbon_pts(frame, kl, kr, k), h0)
+                split_draw(ribbon_pts(frame, kl, kr, k, kk=0.5), min(255, h0 + 18))
+            elif kind == "tube":
+                a, b, ra, rb, bu, bt, side = geo
+                A, B = T(a), T(b)
+                if pf is not None:
+                    pygame.draw.polygon(surf, base, [(x * inv, y * inv) for x, y in pf])     # misma silueta que el albedo
+                else:
                     pygame.draw.polygon(surf, base, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac))
                 if (ra + rb) * k > 4:
                     pygame.draw.polygon(surf, dome, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac, k=0.5))
-            elif kind == "ribbon":
-                frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
-                if pf is None:
-                    pygame.draw.polygon(surf, base, ribbon_pts(frame, kl, kr, k))
-                pygame.draw.polygon(surf, dome, ribbon_pts(frame, kl, kr, k, kk=0.5))
             elif kind == "poly":
                 P = [T(q) for q in geo]
                 pygame.draw.polygon(surf, base, P)
@@ -585,7 +675,7 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0):
                 pts, w, closed, taper = geo
                 P = [T(q) for q in pts]
                 if len(P) >= 2:
-                    val = (max(0, h0 - 22), mid, spec) if groove else (h0 + 4, mid, spec)
+                    val = (max(0, h0 - 22), pid, spec) if groove else (h0 + 4, pid, spec)
                     wpx = max(1.0, w * k * (1.6 if groove else 1.0))
                     if pf is not None and not groove:
                         bp = [(x * inv, y * inv) for x, y in pf]
@@ -598,8 +688,9 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0):
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
-                val = (max(0, h0 - 22), mid, spec) if groove else (h0 + 4, mid, spec)
+                val = (max(0, h0 - 22), pid, spec) if groove else (h0 + 4, pid, spec)
                 pygame.draw.circle(surf, val, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
+    return pieces
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -725,6 +816,13 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
 
     # ── piernas ──────────────────────────────────────────────────────────────
     bottom = lk["bottom"]
+    top = lk["top"]
+    bot_pat = {"gi": "twill", "abada": "cotton", "track": "satin", "shorts_sambo": "cotton", "shorts_thai": "satin",
+               "singlet": "satin", "hakama": "twill", "mawashi": "rib"}.get(bottom, "cotton")
+    top_pat = {"gi": "judo", "kurtka": "canvas", "changshan": "damask", "keikogi": "linen", "tank": "knit",
+               "singlet": "satin"}.get(top, "cotton")
+    top_pat = {"yeon": "twill", "ines": "canvas"}.get(fd["id"], top_pat)
+    fig.zone(cloth=bot_pat, satin=bot_pat)
     feet = lk.get("feet", "descalzo")
     th0, th1, thb = B["thigh"]
     ca0, ca1, cab = B["calf"]
@@ -777,8 +875,8 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                 fig.line(g, [F_(1, 2.8), F_(5, 1.5), F_(10, 1.0)], C("#1A1A1A", x_m, depth), 0.9)
                 fig.line(g, [F_(4, 4.0), F_(8, 2.6), F_(13, 2.2)], C("#1A1A1A", x_m, depth), 0.9)
             else:
-                top = 0.62 if feet == "botas" else 0.32
-                b0 = _lerp2(kn, ankle, top)
+                btop = 0.62 if feet == "botas" else 0.32
+                b0 = _lerp2(kn, ankle, btop)
                 rb = ca1 + 1.5 + (1.0 if feet == "botas_altas" else 0)
                 fig.ribbon(g, [b0, _lerp2(b0, ankle, 0.5), ankle], [(0, rb), (1, ca1 + 1.6)], [(0, rb - 0.3), (1, ca1 + 1.5)], bc, sheen=1.4)
                 fig.m("leather", True)
@@ -834,13 +932,12 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             e = _lerp2(H, kn, 0.32)
             fig.ribbon(g, [H, _lerp2(H, e, 0.5), e], [(0, th0 + 0.7), (1, th0 + 0.3)], [(0, th0 + 0.6), (1, th0 + 0.3)],
                        C(cloth, x_m, depth), sheen=1.8, edge=True)
-            fig.m("leather")
+            fig.m("leather", pat="neoprene")
             pad = [_lerp2(kn, H, 0.12), kn, _lerp2(kn, ankle, 0.12)]
             fig.ribbon(g, pad, [(0, ca0 + 1.3), (0.5, ca0 + 1.9), (1, ca0 + 1.3)], [(0, ca0 + 1.6), (0.5, ca0 + 2.3), (1, ca0 + 1.6)],
                        C("#1C1C1F", x_m, depth), sheen=1.0)       # rodillera de neopreno
 
     # ── torso (piel) ─────────────────────────────────────────────────────────
-    top = lk["top"]
     tx = (wf(0.5) - wb(0.5)) * 0.5
     sk_t = C(skin, tx)
     fig.m("skin")
@@ -873,6 +970,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             _ = (base_t, w0)
 
     # ── ropa del torso (grupo 4: sobre la pierna delantera) ──────────────────
+    fig.zone(cloth=top_pat, satin=top_pat)
     def band(t0, t1, gf, gb):
         return [S(t0, wf(t0) + gf), S(t1, wf(t1) + gf), S(t1, -(wb(t1) + gb)), S(t0, -(wb(t0) + gb))]
 
@@ -904,7 +1002,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             vtri = [S(1.0, 0.4), S(1.0, wf(1.0) + grow), S(apex, wf(apex) + grow - 0.6)]
             fig.m("skin")
             fig.poly(4, vtri, v_col, outline=False, sheen=skin_sheen)
-            fig.m("cloth")
+            fig.m("cloth", pat="stitch")
             cc = C(lk.get("collar", cloth), tx)
             cw = 2.6 if fd["id"] == "yeon" else 2.2
             fig.line(4, [S(1.0, wf(1.0) + grow - 0.6), S(apex, wf(apex) + grow - 1.2)], cc, cw)
@@ -933,7 +1031,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.line(4, [_lerp2(pc[0], pc[3], 0.5), _lerp2(pc[1], pc[2], 0.5)], C("#1E6FB3", tx), 0.5)
         # cinturón con nudo y puntas que se mueven
         if top in ("gi", "kurtka"):
-            fig.m("cloth")
+            fig.m("cloth", pat="belt_worn" if lk.get("belt_style") == "deshilachado" else "belt")
             bc = C(lk.get("belt", "#111111"), tx)
             fig.poly(4, band(0.17, 0.26, grow + 0.4, grow + 0.4), bc, sheen=0.6)
             knot = S(0.215, wf(0.215) + grow + 1.0)
@@ -978,6 +1076,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         fig.line(4, [S(-0.08, 0.0), S(0.72, 0.0)], C(lk["accent"], tx), 1.6)
 
     # partes bajas que se ven sobre la cadera
+    fig.zone(cloth=bot_pat, satin=bot_pat)
     if bottom == "shorts_thai":
         sc_ = C(cloth, tx)
         fig.m("satin")
@@ -1050,6 +1149,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                  shade(hc, 1.3), sheen=0.6)                      # koshi-ita
 
     # ── cuello y cabeza (grupo 5) ────────────────────────────────────────────
+    fig.zone(cloth="rib")
     R = B["head"]
     ang = math.atan2(Hd[0] - Cc[0], -(Hd[1] - Cc[1]))
 
@@ -1290,6 +1390,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         fig.line(5, [S(0.98, wf(0.98) + 2), (S(0.98, wf(0.98))[0] + 4 + sw_h * 20, S(0.98, 0)[1] + 22)], C("#FFFFFF", N[0]), 0.7)
 
     # ── brazos ───────────────────────────────────────────────────────────────
+    fig.zone(cloth=top_pat)
     up0, up1, upb = B["upper"]
     fo0, fo1, fob = B["fore"]
     sleeve = lk.get("sleeve", 0.0) if top in ("gi", "kurtka", "changshan", "keikogi") else 0.0
@@ -1400,7 +1501,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
 # ─────────────────────────────────────────────────────────────────────────────
 #  RENDER CON SUPERMUESTREO
 # ─────────────────────────────────────────────────────────────────────────────
-def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, maps=False):
+def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, maps=False, id_base=1, pieces=None):
     """Dibuja la figura en una superficie propia. U: píxeles finales por cm.
 
     Devuelve (superficie, x_raíz, y_raíz). Con maps=True devuelve (albedo, datos, x_raíz, y_raíz):
@@ -1440,7 +1541,7 @@ def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, 
         else:
             def T1(p):
                 return ((maxx - p[0]) * k1, (p[1] - miny) * k1)
-        _render_data(fig, data, T1, k1, ow_px, fac=fac, shared=shared, inv=1.0 / ss)
+        _render_data(fig, data, T1, k1, ow_px, fac=fac, shared=shared, inv=1.0 / ss, id_base=id_base, pieces=pieces)
     if ss > 1:
         canvas = pygame.transform.smoothscale(canvas, size)
         rx, ry = rx / ss, ry / ss
@@ -1449,7 +1550,7 @@ def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, 
     return canvas, rx, ry
 
 
-def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=False, lut_bw=False, data_surf=None):
+def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=False, lut_bw=False, data_surf=None, pieces=None):
     """Luchador en pantalla: sombra (renderer CPU), figura supermuestreada y cajas de depuración."""
     pose = fighter_pose(f)
     if f.squash > 0.02 and f.y >= 0:
@@ -1473,8 +1574,14 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
     ss = max(1.0, min(cfg.get("ss", 2), cfg.get("ss_px", 2.7) / max(0.1, cam.S(1))))
     x0, y0 = cam.P(f.x, f.y)
     if data_surf is not None:
-        img, data, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=ss, outline=ocol, ow_px=ow, maps=True)
-        data_surf.blit(data, (int(x0 - rx), int(y0 - ry)))
+        mine: list = []
+        base = len(pieces) + 1 if pieces is not None else 1
+        img, data, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=ss, outline=ocol, ow_px=ow, maps=True,
+                                          id_base=base, pieces=mine)
+        ox, oy = int(x0 - rx), int(y0 - ry)
+        data_surf.blit(data, (ox, oy))
+        if pieces is not None:      # anclas de las piezas en coordenadas de pantalla
+            pieces.extend((ax + ox, ay + oy) + tuple(rest) for ax, ay, *rest in mine)
     else:
         img, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=ss, outline=ocol, ow_px=ow)
     surf.blit(img, (int(x0 - rx), int(y0 - ry)))
