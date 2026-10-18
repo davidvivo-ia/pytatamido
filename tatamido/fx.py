@@ -6,6 +6,7 @@ import pygame
 
 from .camera import Camera
 from .config import *
+from .ui import ScaledFonts, draw, panel
 
 W, H = LW, LH       # carteles y destellos van en la interfaz (resolución lógica)
 
@@ -161,6 +162,7 @@ class Effects:
                 pygame.draw.circle(layer, (16, 12, 14, a), (int(sx), int(sy)), max(1, int(cam.S(th) * (1 + 0.3 * t))))
 
     def draw_screen(self, surf, fonts, reduce_flash=False):
+        fonts = fonts.at(surf)
         for p in self.popups:
             t = p["life"] / p["max"]
             a = 255 if t < 0.75 else int(255 * (1 - (t - 0.75) / 0.25))
@@ -179,10 +181,7 @@ class Effects:
                 s2.set_alpha(a)
                 surf.blit(s2, (W // 2 - s2.get_width() // 2, p["y"] + txt.get_height() + 4))
         if self.flash > 0.02:
-            fl = pygame.Surface((W, H))
-            fl.fill(self.flash_color)
-            fl.set_alpha(int(self.flash * (90 if reduce_flash else 220)))
-            surf.blit(fl, (0, 0))
+            panel(surf, (0, 0, W, H), (*self.flash_color, int(self.flash * (90 if reduce_flash else 220))))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,9 +230,20 @@ class Fonts:
             self.cache[key] = pygame.font.SysFont(self.cjk_name, size) if self.cjk_name else None
         return self.cache[key]
 
+    def at(self, surf):
+        """Las fuentes adecuadas para pintar en `surf`: en una interfaz a escala k, glifos a tamaño ×k."""
+        k = getattr(surf, "k", 1)
+        if k == 1:
+            return self
+        key = ("scaled", k)
+        if key not in self.cache:
+            self.cache[key] = ScaledFonts(self, k)
+        return self.cache[key]
+
 
 def draw_kanji_do(surf, x, y, size, color=(20, 16, 18), fonts: Optional[Fonts] = None):
     """Dibuja 道 con fuente CJK si existe; si no, una caligrafía de trazos aproximada."""
+    fonts = fonts.at(surf) if fonts else None
     f = fonts.cjk(size) if fonts else None
     if f:
         img = f.render("道", True, color)
@@ -241,7 +251,7 @@ def draw_kanji_do(surf, x, y, size, color=(20, 16, 18), fonts: Optional[Fonts] =
         return
     s = size / 100.0
     def L(pts, w):
-        pygame.draw.lines(surf, color, False, [(x + px * s, y + py * s) for px, py in pts], max(1, int(w * s)))
+        draw.lines(surf, color, False, [(x + px * s, y + py * s) for px, py in pts], max(1, int(w * s)))
     # 首: dos puntos, techo largo y el bloque 自 con dos trazos interiores
     L([(-12, -47), (-5, -37)], 7); L([(14, -47), (7, -37)], 7)
     L([(-26, -31), (34, -31)], 8)

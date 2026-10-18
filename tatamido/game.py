@@ -23,6 +23,7 @@ from .match import Match
 from .postfx import apply_lut, bloom
 from .replay import list_replays, load_replay, save_replay
 from .render_fighter import draw_figure_preview, draw_portrait
+from .ui import UISurface, draw as udraw, panel
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  JUEGO: escenas, menús, modos
@@ -50,7 +51,8 @@ class Game:
         self.bg = pygame.Surface((RW, RH), pygame.SRCALPHA)
         self.fig = pygame.Surface((RW, RH), pygame.SRCALPHA)
         self.figd = pygame.Surface((RW, RH), pygame.SRCALPHA)   # altura y material de los luchadores (GPU)
-        self.hud = pygame.Surface((W, H), pygame.SRCALPHA)       # interfaz a resolución lógica
+        # la interfaz se escribe en coordenadas lógicas (1280×720) y se pinta a la resolución de render
+        self.hud = UISurface((W, H), RW / W) if self.gpu is not None else pygame.Surface((W, H), pygame.SRCALPHA)
         self._bd_params = None
         self._dirty = {"prev": None}      # zonas pintadas en el fotograma anterior (subidas parciales a la GPU)
         self.audio = Audio(self.save.get("volume", 0.8))
@@ -631,7 +633,7 @@ class Game:
         sc = self.scene
         acc = self.access()
         hud = self.hud
-        hud.fill((0, 0, 0, 0))
+        hud.clear()
         self._bd_params = None
         p = None
         if sc == "fight" and self.match is not None:
@@ -782,7 +784,7 @@ class Game:
         surf.blit(self.title_dojo.vignette(180), (0, 0))
 
     def text(self, surf, s, size, x, y, color=(240, 232, 218), center=False, serif=False, alpha=255, shadow=True):
-        f = self.fonts.get(size, serif)
+        f = self.fonts.at(surf).get(size, serif)
         img = f.render(s, True, color)
         if alpha < 255:
             img.set_alpha(alpha)
@@ -799,7 +801,7 @@ class Game:
 
     def draw_title(self, surf):
         self.draw_backdrop(surf, 90)
-        band = pygame.Surface((W, 230), pygame.SRCALPHA); band.fill((8, 6, 6, 120)); surf.blit(band, (0, H // 2 - 10))
+        panel(surf, (0, H // 2 - 10, W, 230), (8, 6, 6, 120))
         pulse = (math.sin(self.frame * 0.05) + 1) / 2
         # caligrafía 道 grande, en tinta
         draw_kanji_do(surf, W // 2, H // 2 - 70, 230, (22, 16, 18), self.fonts)
@@ -818,7 +820,7 @@ class Game:
         for i, (label, key) in enumerate(MENU_ITEMS):
             sel = i == self.menu_i
             if sel:
-                pygame.draw.rect(surf, (255, 220, 160), (76, y + 6, 6, 28))
+                udraw.rect(surf, (255, 220, 160), (76, y + 6, 6, 28))
             self.text(surf, label, 36 if sel else 32, 100, y, (255, 240, 215) if sel else (190, 180, 165), serif=sel)
             y += 52
         desc = {"versus": "Dos jugadores en el mismo teclado o con mandos. Al mejor de tres asaltos.",
@@ -831,7 +833,7 @@ class Game:
                 "quit": "Termina con un saludo."}[MENU_ITEMS[self.menu_i][1]]
         self.text(surf, desc, 20, 100, y + 20, (210, 200, 185))
         # recordatorio de controles
-        box = pygame.Surface((420, 300), pygame.SRCALPHA); box.fill((10, 8, 8, 150)); surf.blit(box, (W - 470, 200))
+        panel(surf, (W - 470, 200, 420, 300), (10, 8, 8, 150))
         lines = ["CONTROLES", "", "J1: WASD mover · U/I/O golpes · J agarre", "    K bloqueo (parada: 4 frames) · L Kiai Final",
                  "J2: Flechas · Num 4/5/6 · Num 1/2/3", "", "Atrás + Medio: técnica de estilo", "Agacharse + Fuerte: barrido",
                  "Saltar + golpe: golpe aéreo", "", "F12 Modo Foto · F1 hitboxes · Esc pausa"]
@@ -855,9 +857,9 @@ class Game:
             sel = (i == self.sel[0]) or (self.mode == "versus" and i == self.sel[1])
             draw_portrait(surf, fd, r, self.title_dojo.rig, sel, locked)
             if i == self.sel[0]:
-                pygame.draw.rect(surf, (255, 170, 80), r.inflate(4, 4), 3)
+                udraw.rect(surf, (255, 170, 80), r.inflate(4, 4), 3)
             if self.mode == "versus" and i == self.sel[1]:
-                pygame.draw.rect(surf, (90, 170, 255), r.inflate(10, 10), 3)
+                udraw.rect(surf, (90, 170, 255), r.inflate(10, 10), 3)
             nm = "???" if locked else fd["name"].split(" ")[0] if " " in fd["name"] else fd["name"]
             self.text(surf, nm, 18, r.centerx, r.bottom - 22, (240, 232, 218), center=True)
         # fichas
@@ -866,7 +868,7 @@ class Game:
             locked = fd.get("locked") and not self.save.get("okabe")
             x = 60 if p == 0 else W - 480
             y = 360
-            pygame.draw.rect(surf, (255, 170, 80) if p == 0 else (90, 170, 255), (x - 10, y, 4, 300))
+            udraw.rect(surf, (255, 170, 80) if p == 0 else (90, 170, 255), (x - 10, y, 4, 300))
             if locked:
                 self.text(surf, "???", 40, x, y, (120, 110, 100), serif=True)
                 self.text(surf, "Gana el Torneo sin perder un asalto.", 20, x, y + 50, (170, 160, 150))
@@ -879,7 +881,7 @@ class Game:
             for lab, key in (("Fuerza", "F"), ("Velocidad", "V"), ("Defensa", "D"), ("Alcance", "A"), ("Técnica", "T")):
                 self.text(surf, lab, 18, x, yy, (190, 180, 165), shadow=False)
                 for k in range(5):
-                    pygame.draw.rect(surf, (255, 215, 150) if k < fd[key] else (60, 50, 44), (x + 110 + k * 22, yy + 4, 16, 10))
+                    udraw.rect(surf, (255, 215, 150) if k < fd[key] else (60, 50, 44), (x + 110 + k * 22, yy + 4, 16, 10))
                 yy += 22
             self.text(surf, f"Kiai Final: {fd['kiai']}", 20, x, yy + 6, (255, 225, 180))
             self.text(surf, f"Debilidad: {fd['weak']}", 18, x, yy + 32, (200, 170, 160))
@@ -986,8 +988,8 @@ class Game:
         self.text(surf, "Intro para empezar", 18, W // 2, H - 40, (170, 160, 150), center=True)
 
     def draw_replay_frame(self, surf):
-        pygame.draw.rect(surf, (0, 0, 0), (0, 0, W, 70))
-        pygame.draw.rect(surf, (0, 0, 0), (0, H - 70, W, 70))
+        udraw.rect(surf, (0, 0, 0), (0, 0, W, 70))
+        udraw.rect(surf, (0, 0, 0), (0, H - 70, W, 70))
         self.text(surf, f"REPETICIÓN · ángulo {self.match.replay_angle % 3 + 1}/3 · 1/3 velocidad", 22, W // 2, H - 48, (230, 230, 230), center=True)
 
     def draw_match_end(self, surf):
@@ -1001,7 +1003,7 @@ class Game:
             self.text(surf, "Intro para continuar", 20, W // 2, H - 100, (200, 190, 175), center=True)
 
     def draw_pause(self, surf):
-        d = pygame.Surface((W, H), pygame.SRCALPHA); d.fill((0, 0, 0, 205 if self.movelist else 160)); surf.blit(d, (0, 0))
+        panel(surf, (0, 0, W, H), (0, 0, 0, 205 if self.movelist else 160))
         if self.movelist:
             self.draw_movelist(surf)
             return
@@ -1066,7 +1068,7 @@ class Game:
 
     def draw_photo_ui(self, surf):
         ph = self.photo
-        box = pygame.Surface((W, 64), pygame.SRCALPHA); box.fill((0, 0, 0, 170)); surf.blit(box, (0, H - 64))
+        panel(surf, (0, H - 64, W, 64), (0, 0, 0, 170))
         self.text(surf, f"MODO FOTO   LUT [1-5]: {ph['lut']}   ·   zoom {ph['zoom']:.2f} (Q/E)   ·   exposición {ph['exposure']:+d} ([ ])   ·   G grano {'on' if ph['grain'] else 'off'}   ·   B bokeh {'on' if ph['dof'] else 'off'}   ·   H HUD", 20, 20, H - 52, (240, 232, 218), shadow=False)
         self.text(surf, "Flechas: encuadre   ·   Espacio: avanzar un fotograma   ·   P: guardar PNG 2x en ./fotos   ·   F12/Esc: salir", 18, 20, H - 26, (190, 180, 165), shadow=False)
         if ph["saved_msg"] > 0:

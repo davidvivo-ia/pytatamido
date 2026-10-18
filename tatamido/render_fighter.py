@@ -20,6 +20,7 @@ from .camera import Camera
 from .config import *
 from .fighter import Fighter
 from .poses import fighter_pose, stance as _stance
+from .ui import draw as ui_draw, native as ui_native
 
 LIGHT = (-0.72, -0.69)          # dirección de la luz en pantalla: de los shōji, arriba a la izquierda
 OUTLINE = (16, 11, 9)
@@ -1858,7 +1859,10 @@ def draw_figure_preview(surf, fd, feet_x, feet_y, height_px, facing=1, t=0.0, ri
 
 
 def draw_portrait(surf, fd: dict, rect: pygame.Rect, rig: dict, selected=False, locked=False):
-    """Retrato de busto: la misma figura del combate, encuadrada en cabeza y hombros. Se cachea."""
+    """Retrato de busto: la misma figura del combate, encuadrada en cabeza y hombros. Se cachea.
+    En una interfaz a escala se compone a la resolución nativa del recuadro, no reescalado."""
+    frame = rect
+    rect = ui_native(surf, rect)[1]
     key = (fd["id"], rect.w, rect.h, locked)
     img = _PORTRAITS.get(key)
     if img is None:
@@ -1880,5 +1884,5 @@ def draw_portrait(surf, fd: dict, rect: pygame.Rect, rig: dict, selected=False, 
         head_y = ry + hy_ * d.scale * U
         img.blit(fig_img, (int(rect.w * 0.46 - head_x), int(rect.h * 0.4 - head_y)))
         _PORTRAITS[key] = img
-    surf.blit(img, rect.topleft)
-    pygame.draw.rect(surf, (255, 220, 160) if selected else (60, 50, 44), rect, 3 if selected else 1)
+    getattr(surf, "blit_native", surf.blit)(img, rect.topleft)
+    ui_draw.rect(surf, (255, 220, 160) if selected else (60, 50, 44), frame, 3 if selected else 1)

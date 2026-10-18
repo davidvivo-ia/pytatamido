@@ -10,6 +10,7 @@ from .config import *
 from .dojo import Dojo
 from .fighter import Fighter
 from .fx import Effects, Fonts
+from .ui import draw as udraw, panel
 from .moves import Move
 from .inputs import PlayerInput
 from .render_fighter import draw_fighter, draw_trail
@@ -881,24 +882,25 @@ class Match:
     def draw_hud(self, surf, fonts: Fonts):
         if self.state == Match.REPLAY:
             return
+        fonts = fonts.at(surf)
         a, b = self.f
         bar_w = 470
         y = 28
         for i, f in enumerate(self.f):
             x = 40 if i == 0 else W - 40 - bar_w
             # vitalidad
-            pygame.draw.rect(surf, (20, 14, 12), (x - 2, y - 2, bar_w + 4, 22))
+            udraw.rect(surf, (20, 14, 12), (x - 2, y - 2, bar_w + 4, 22))
             frac = f.vit / VIT_MAX
             col = (236, 220, 190) if frac > 0.4 else (240, 160, 110) if frac > 0.15 else (230, 80, 70)
             w = int(bar_w * frac)
             rect = (x if i == 0 else x + bar_w - w, y, w, 18)
-            pygame.draw.rect(surf, col, rect)
-            pygame.draw.rect(surf, f.player_color, (x - 2, y - 2, bar_w + 4, 22), 2)
+            udraw.rect(surf, col, rect)
+            udraw.rect(surf, f.player_color, (x - 2, y - 2, bar_w + 4, 22), 2)
             # aliento
             sw = int((bar_w - 60) * f.stam / STAM_MAX)
             sc = (120, 200, 230) if not f.exhausted else (220, 90, 70)
-            pygame.draw.rect(surf, (20, 14, 12), (x if i == 0 else x + 60, y + 26, bar_w - 60, 6))
-            pygame.draw.rect(surf, sc, (x if i == 0 else x + bar_w - sw, y + 26, sw, 6))
+            udraw.rect(surf, (20, 14, 12), (x if i == 0 else x + 60, y + 26, bar_w - 60, 6))
+            udraw.rect(surf, sc, (x if i == 0 else x + bar_w - sw, y + 26, sw, 6))
             # nombre y estilo
             name = fonts.get(26, serif=True).render(f.fd["name"].upper(), True, (245, 238, 225))
             style = fonts.get(18).render(f.fd["style"], True, (200, 190, 175))
@@ -911,25 +913,25 @@ class Match:
             # asaltos ganados, waza-ari y jogai
             for k in range(2):
                 cx = (x + 10 + k * 22) if i == 0 else (x + bar_w - 10 - k * 22)
-                pygame.draw.circle(surf, (255, 220, 150) if f.wins > k else (60, 50, 44), (cx, y + 96), 7)
-                pygame.draw.circle(surf, (120, 100, 80), (cx, y + 96), 7, 1)
+                udraw.circle(surf, (255, 220, 150) if f.wins > k else (60, 50, 44), (cx, y + 96), 7)
+                udraw.circle(surf, (120, 100, 80), (cx, y + 96), 7, 1)
             for k in range(f.wazaari):
                 cx = (x + 70 + k * 18) if i == 0 else (x + bar_w - 70 - k * 18)
-                pygame.draw.polygon(surf, (255, 200, 120), [(cx, y + 88), (cx + 7, y + 96), (cx, y + 104), (cx - 7, y + 96)])
+                udraw.polygon(surf, (255, 200, 120), [(cx, y + 88), (cx + 7, y + 96), (cx, y + 104), (cx - 7, y + 96)])
             for k in range(f.jogai):
                 cx = (x + 130 + k * 14) if i == 0 else (x + bar_w - 130 - k * 14)
-                pygame.draw.rect(surf, (230, 90, 80), (cx - 4, y + 92, 8, 8))
+                udraw.rect(surf, (230, 90, 80), (cx - 4, y + 92, 8, 8))
             # kiai (abajo)
             kw = 300
             kx = 40 if i == 0 else W - 40 - kw
             ky = H - 46
-            pygame.draw.rect(surf, (20, 14, 12), (kx - 2, ky - 2, kw + 4, 14))
+            udraw.rect(surf, (20, 14, 12), (kx - 2, ky - 2, kw + 4, 14))
             kf = f.kiai / KIAI_MAX
             kc = (255, 200, 90) if kf >= 1 else (190, 140, 70)
             if kf >= 1 and (self.frame // 8) % 2 == 0:
                 kc = (255, 240, 180)
             kwid = int(kw * kf)
-            pygame.draw.rect(surf, kc, (kx if i == 0 else kx + kw - kwid, ky, kwid, 10))
+            udraw.rect(surf, kc, (kx if i == 0 else kx + kw - kwid, ky, kwid, 10))
             lab = fonts.get(16).render("KIAI" + ("  ·  ¡LISTO! (L / Num3)" if kf >= 1 else ""), True, (210, 190, 160))
             surf.blit(lab, (kx if i == 0 else kx + kw - lab.get_width(), ky - 20))
         # contador de combo (sobre el lado del que recibe)
@@ -948,10 +950,8 @@ class Match:
                 w = 520
                 x = int(lerp(-w, 40, k)) if i == 0 else int(lerp(W, W - 40 - w, k))
                 y = H // 2 - 40 + i * 100
-                card = pygame.Surface((w, 84), pygame.SRCALPHA)
-                card.fill((8, 6, 6, 170))
-                pygame.draw.rect(card, f.player_color, (0, 0, 6, 84))
-                surf.blit(card, (x, y))
+                panel(surf, (x, y, w, 84), (8, 6, 6, 170))
+                udraw.rect(surf, f.player_color, (x, y, 6, 84))
                 nm = fonts.get(40, serif=True).render(f.fd["name"], True, (248, 236, 215))
                 tt = fonts.get(20).render(f"«{f.fd['title']}»  ·  {f.fd['style']}", True, (210, 195, 170))
                 surf.blit(nm, (x + 20, y + 8))
@@ -967,14 +967,14 @@ class Match:
         if self.ground:
             g = self.ground
             gx, gw = W // 2 - 200, 400
-            pygame.draw.rect(surf, (20, 14, 12), (gx, H // 2 + 150, gw, 16))
+            udraw.rect(surf, (20, 14, 12), (gx, H // 2 + 150, gw, 16))
             mid = gx + gw // 2
             t = g["tension"]
             if t >= 0:
-                pygame.draw.rect(surf, g["att"].player_color, (mid, H // 2 + 150, int(t * gw / 2), 16))
+                udraw.rect(surf, g["att"].player_color, (mid, H // 2 + 150, int(t * gw / 2), 16))
             else:
-                pygame.draw.rect(surf, g["df"].player_color, (mid + int(t * gw / 2), H // 2 + 150, int(-t * gw / 2), 16))
-            pygame.draw.line(surf, (255, 255, 255), (mid, H // 2 + 146), (mid, H // 2 + 170), 2)
+                udraw.rect(surf, g["df"].player_color, (mid + int(t * gw / 2), H // 2 + 150, int(-t * gw / 2), 16))
+            udraw.line(surf, (255, 255, 255), (mid, H // 2 + 146), (mid, H // 2 + 170), 2)
         # datos de frames (entrenamiento)
         if self.frame_data_overlay:
             yy = 200

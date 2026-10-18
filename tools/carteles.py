@@ -37,7 +37,7 @@ sys.path.insert(0, ROOT)
 import pygame  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from tatamido.config import LH, LW, RS, W, H  # noqa: E402
+from tatamido.config import RS, W, H  # noqa: E402
 from tatamido.fighter import Fighter  # noqa: E402
 from tatamido.game import Game  # noqa: E402
 from tatamido.match import Match  # noqa: E402
@@ -183,7 +183,7 @@ def c10():
 
 
 def c06():
-    """Selección de luchador: la interfaz se reescala; los luchadores, a resolución nativa con su luz y tejidos."""
+    """Selección de luchador: interfaz, retratos y luchadores a resolución nativa, con su luz y tejidos."""
     G.scene, G.mode, G.sel = "select", "versus", [3, 8]
     for _ in range(3):
         G.frame += 1
@@ -211,7 +211,7 @@ def lineup(rnd, name):
     cam.zoom = 1.0
     mk = lambda: pygame.Surface((W, H), pygame.SRCALPHA)
     bg, fig, figd, fx = mk(), mk(), mk(), mk()
-    hud = pygame.Surface((LW, LH), pygame.SRCALPHA)          # la interfaz va a resolución lógica
+    hud = pygame.Surface((W, H), pygame.SRCALPHA)            # sin interfaz: vacía, a la resolución de render
     dojo.draw(bg, cam, G.fonts, gpu=True)
     pieces = []
     for row, idxs in ((0, list(range(0, 12, 2))), (1, list(range(1, 12, 2)))):
@@ -267,8 +267,8 @@ def c09():
     save(out, "09_tejidos.jpg")
 
 
-SHOTS = [("01", c01), ("02", c02), ("03", c03), ("04", c04), ("05", c05), ("07", c07), ("08", c08), ("09", c09),
-         ("10", c10)]
+SHOTS = [("01", c01), ("02", c02), ("03", c03), ("04", c04), ("05", c05), ("06", c06), ("07", c07), ("08", c08),
+         ("09", c09), ("10", c10)]
 
 if __name__ == "__main__":
     print(f"render {W}×{H} (RS {RS:g}) → {ARGS.width} px")
@@ -276,11 +276,3 @@ if __name__ == "__main__":
         if wants(pre):
             print(pre, fn.__doc__.strip().split(":")[0])
             fn()
-    if wants("06"):
-        if RS == 2:
-            print("06", c06.__doc__.strip())
-            c06()
-        else:                      # la selección se fotografía a 1440p: interfaz reescalada, luchadores nativos
-            import subprocess
-            subprocess.run([sys.executable, os.path.abspath(__file__), "--rs", "2", "--only", "06", "--width", "2560",
-                            "--out", ARGS.out], check=True)

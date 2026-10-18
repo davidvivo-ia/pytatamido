@@ -1,4 +1,4 @@
-"""Resolución de render por encima de 720p (1080p): capas del mundo a escala, interfaz lógica reescalada,
+"""Resolución de render por encima de 720p (1080p): capas del mundo a escala, interfaz lógica pintada a escala nativa,
 lámina de pared horneada y subidas parciales. Se ejecuta en otro proceso porque la escala se fija al importar."""
 import os
 import subprocess
@@ -28,9 +28,10 @@ for _ in range(3):
     g.draw()
 img = g.capture()
 assert img.get_size() == (1920, 1080), img.get_size()
-assert g.hud.get_size() == (1280, 720)
+assert g.hud.get_size() == (1280, 720)              # la interfaz habla en unidades lógicas...
+assert g.hud.surf.get_size() == (1920, 1080)        # ...y pinta a la resolución de render
 assert g.match.dojo.plate["col"].get_width() > 1920
-# la barra de vida (interfaz) está arriba a la izquierda, reescalada: no es negra
+# la barra de vida (interfaz) está arriba a la izquierda: no es negra
 r, gg, b, _ = img.get_at((300, 54))
 assert r + gg + b > 200, (r, gg, b)
 print("ok")

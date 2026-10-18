@@ -103,8 +103,10 @@ renderer de pygame. pygame dibuja las capas (fondo, luchadores, efectos, HUD) y 
 
 - **Resolución nativa:** el juego renderiza a 1080p, 1440p o 4K (`--res`, u opción *Resolución*; en
   `auto` elige por el escritorio: 1080p en Full HD, 1440p en QHD y en 4K). Las capas del mundo se
-  dibujan a esa resolución; la interfaz se compone en 1280×720 lógicos y la GPU la reescala. Sólo se
-  borra y se sube a la GPU la zona que cambió en cada fotograma (luchadores, público).
+  dibujan a esa resolución. La interfaz se escribe en 1280×720 lógicos pero se pinta a la resolución
+  de render (`tatamido/ui.py`): textos con la fuente al tamaño real, barras y retratos rasterizados a
+  escala, nada reescalado desde 720p. Sólo se borra y se sube a la GPU la zona que cambió en cada
+  fotograma (luchadores, público, y la interfaz por franjas horizontales).
 - **Pared horneada:** techo con pilares y viga nageshi, enlucido de barro, pared de madera, doce shōji,
   tokonoma y farolillos se hornean una vez por luz de asalto en una lámina de alta resolución con
   máscara de materiales; la GPU la proyecta con la cámara (parallax incluido) y le pinta a resolución

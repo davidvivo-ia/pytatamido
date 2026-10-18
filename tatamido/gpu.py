@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     moderngl = None
     np = None
 
-from .config import FLOOR_Y, H, LH, LW, RS, W, cam_base_off, mixc
+from .config import FLOOR_Y, H, RS, W, cam_base_off, mixc
 
 LUT_IDS = {"Natural": 0, "Caravaggio": 1, "Hammershøi": 2, "Kurosawa B/N": 3, "Daido Moriyama": 4}
 DALT_IDS = {"off": 0, "protanopia": 1, "deuteranopia": 2, "tritanopia": 3}
@@ -972,7 +972,8 @@ class GPURenderer:
         self.slots = [dict(ver=None, col=None, mat=None), dict(ver=None, col=None, mat=None)]   # lámina actual y anterior
         self._dummy = tex((4, 4))
         self._figd_blank = None
-        self.t_hud = tex((LW, LH))          # la interfaz, a resolución lógica: PRESENT la reescala
+        self._tex = tex
+        self.t_hud = tex((W, H))            # la interfaz a resolución de render (ui.UISurface): texto nítido
         self.t_scene = tex((W, H), dtype="f2")
         self.f_scene = ctx.framebuffer([self.t_scene])
         self.t_dof = tex((W, H), dtype="f2")
@@ -1039,6 +1040,20 @@ class GPURenderer:
             tex.write(pygame.image.tobytes(surf, "RGBA"))
         if mip:
             tex.build_mipmaps()
+
+    def _upload_hud(self, hud):
+        """La interfaz: si es una UISurface, sólo las franjas pintadas en este fotograma o en el anterior."""
+        surf = getattr(hud, "surf", hud)
+        rects = hud.take_dirty() if hasattr(hud, "take_dirty") else None
+        if self.t_hud.size != surf.get_size():
+            self.t_hud.release()
+            self.t_hud = self._tex(surf.get_size())
+            rects = None
+        if rects is None or self.t_hud.swizzle != self._swz:
+            self._upload(self.t_hud, surf)
+            return
+        for r in rects:
+            self._upload(self.t_hud, surf, rect=r)
 
     @staticmethod
     def _set(prog, name, value):
@@ -1126,7 +1141,7 @@ class GPURenderer:
                 arr[1, i + 1] = pc[4:8]
             self.t_pieces.write(arr.tobytes())
         self._upload(self.t_fx, fx)
-        self._upload(self.t_hud, hud)
+        self._upload_hud(hud)
         S = self._set
         ctx.disable(moderngl.BLEND)
 
