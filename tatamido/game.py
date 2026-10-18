@@ -12,7 +12,7 @@ from .config import *
 from .data import FIGHTERS, FIGHTER_BY_ID, EPILOGUE_FOOTER
 from .dojo import Dojo
 from .fighter import Fighter
-from .fx import Fonts
+from .fx import Fonts, draw_kanji_do
 from .inputs import KEYMAP_P1, KEYMAP_P2, PlayerInput
 from .match import Match
 from .postfx import apply_lut, bloom
