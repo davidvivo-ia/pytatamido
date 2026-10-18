@@ -1454,6 +1454,10 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                 fig.bump(g, (vm[0] + tdy * th_ * 0.25, vm[1] - tdx * th_ * 0.25), 0.1 * L1, th_ * 0.3, math.atan2(tdy, tdx), 4 * dm, skin_sheen)
                 gc = _lerp2(kn, ankle, 0.3)
                 fig.bump(g, (gc[0] - ldy * cf_ * 0.3, gc[1] + ldx * cf_ * 0.3), 0.2 * L2, cf_ * 0.5, math.atan2(ldy, ldx), 6 * dm, skin_sheen)
+                v_ = (getattr(f, "marks", None) or {}).get("espinilla", 0.0)
+                if v_ > 0.05 and side == "r":
+                    sc_ = _lerp2(kn, ankle, 0.42)
+                    fig.dot(g, (sc_[0] + ldy * cf_ * 0.5, sc_[1] - ldx * cf_ * 0.5), 2.0 + v_, mixc(sk, (110, 70, 105), 0.12 + 0.2 * v_))
         # pie
         def F_(a, b, toe=11.0):
             # la parte de los dedos (a > toe) vuelve a quedar plana en el suelo cuando el talón está subido
@@ -1801,7 +1805,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     face_c = C(skin, Hd[0])
     if "rubor" in ex or red > 0.05:
         face_c = mixc(face_c, (205, 85, 75), min(0.45, 0.12 + 0.25 * getattr(f, "breath", 0.0) + 0.3 * red))
-    hair_c = C(lk["hair_c"], Hd[0])
+    hair_c = shade(C(lk["hair_c"], Hd[0]), 1.0 - 0.12 * sweat)          # el sudor oscurece el pelo
     hair = lk["hair"]
     # pelo con física de muelle: la cabeza que se mueve deja atrás coletas, trenzas, rastas y flequillo,
     # que se pasan de largo al frenar y oscilan hasta asentarse
@@ -2149,6 +2153,38 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         fig.poly(5, [S(1.0, wf(1.0) + 2.5), S(1.0, -wb(1.0) - 2.5), _lerp2(S(1.0, -wb(1.0)), Hd, 0.2), _lerp2(S(1.0, wf(1.0)), Hd, 0.2)], sc_)
         fig.tube(5, S(0.98, wf(0.98) + 2), (S(0.98, wf(0.98))[0] + 4 + sw_h * 20, S(0.98, 0)[1] + 22), 2.4, 2.0, sc_, sheen=1.2)
         fig.line(5, [S(0.98, wf(0.98) + 2), (S(0.98, wf(0.98))[0] + 4 + sw_h * 20, S(0.98, 0)[1] + 22)], C("#FFFFFF", N[0]), 0.7)
+
+    # ── desgaste del combate: marcas de los golpes, gotas de sudor y pelo revuelto ──
+    marks = getattr(f, "marks", None) or {}
+    v = marks.get("pomulo", 0.0)
+    if v > 0.05:
+        fig.m("skin")
+        fig.dot(5, HP(0.56, 0.12), (0.12 + 0.05 * v) * R, mixc(face_c, (112, 72, 112), 0.12 + 0.22 * v))
+        fig.bump(5, HP(0.56, 0.1), 0.16 * R, 0.12 * R, 0.0, 3 * v, skin_sheen)                     # hinchazón
+    v = marks.get("ceja", 0.0)
+    if v > 0.05:
+        fig.m("skin")
+        fig.bump(5, HP(0.6, -0.33), 0.15 * R, 0.08 * R, 0.0, 4 * v, skin_sheen)
+        fig.line(5, [HP(0.53, -0.36), HP(0.6, -0.39), HP(0.67, -0.37)], (150, 28, 30), (0.02 + 0.02 * v) * R)  # brecha en la ceja
+    v = marks.get("costillas", 0.0)
+    if v > 0.05 and top == "none":
+        fig.m("skin")
+        fig.dot(2, S(0.5, wf(0.5) * 0.45), 3.0 + 1.5 * v, mixc(sk_t, (110, 70, 105), 0.1 + 0.2 * v))
+    if sweat > 0.45:
+        # gotas en la frente y la sien: puntos de brillo sobre la piel, más cuanto más sudor
+        fig.m("skin")
+        for i, (gx_, gy_) in enumerate(((0.62, -0.5), (0.45, -0.42), (0.78, -0.4), (0.3, -0.2), (0.7, -0.62))[:int(1 + sweat * 4)]):
+            fig.dot(5, HP(gx_, gy_), 0.028 * R, mixc(face_c, (255, 250, 240), 0.35))
+            fig.gloss(5, HP(gx_, gy_), 0.05 * R, 4.0)
+    if dish > 0.25 and hair not in ("rapado",):
+        # pelo revuelto: mechones sueltos que se salen del peinado
+        fig.m("hair")
+        for i in range(int(dish * 6)):
+            a = -2.3 + i * 0.55
+            r0 = 0.92
+            p0 = HP(0.1 + r0 * math.cos(a) * 0.9, -0.05 + r0 * math.sin(a))
+            p1 = HP(0.1 + (r0 + 0.25) * math.cos(a + 0.25 * (-1) ** i) * 0.9, -0.05 + (r0 + 0.22) * math.sin(a + 0.2))
+            fig.line(5, [p0, _lerp2(p0, p1, 0.5), p1], hair_c, 0.035 * R)
 
     # ── brazos ───────────────────────────────────────────────────────────────
     fig.zone(cloth=top_pat)
@@ -2675,6 +2711,7 @@ class PoseDummy:
         self.sweat = 0.15
         self.redness = 0.0
         self.dishevel = 0.0
+        self.marks = {}
         self.exhausted = False
         self.squash = 0.0
         self.rim = 0.0
@@ -2705,6 +2742,9 @@ def draw_figure_preview(surf, fd, feet_x, feet_y, height_px, facing=1, t=0.0, ri
     pieces.extend((ax + ox, ay + oy) + tuple(r) for ax, ay, *r in mine)
 
 
+PORTRAIT_BAKER = None      # Game lo apunta a gpu.bake_figure cuando hay renderer GPU
+
+
 def draw_portrait(surf, fd: dict, rect: pygame.Rect, rig: dict, selected=False, locked=False):
     """Retrato de busto: la misma figura del combate, encuadrada en cabeza y hombros. Se cachea.
     En una interfaz a escala se compone a la resolución nativa del recuadro, no reescalado."""
@@ -2719,13 +2759,25 @@ def draw_portrait(surf, fd: dict, rect: pygame.Rect, rig: dict, selected=False, 
         for i in range(rect.h):
             img.fill(mixc(top_c, (10, 8, 8), i / rect.h), (0, i, rect.w, 1))
         glow = pygame.Surface(rect.size, pygame.SRCALPHA)
-        pygame.draw.circle(glow, (255, 220, 170, 40), (int(rect.w * 0.3), int(rect.h * 0.3)), int(rect.w * 0.55))
+        for i in range(10):                                  # halo suave detrás de la cabeza (no un disco)
+            pygame.draw.circle(glow, (255, 220, 170, 7), (int(rect.w * 0.34), int(rect.h * 0.32)), int(rect.w * (0.75 - i * 0.065)))
         img.blit(glow, (0, 0))
         d = PoseDummy(fd, 1, 0.0)
         pose = fighter_pose(d)
         U = rect.h / 62.0
         flat = (14, 12, 12) if locked else None
-        fig_img, rx, ry = render_figure(d, pose, U, LIGHT_RIGS[1], ss=2, flat=flat)
+        if PORTRAIT_BAKER is not None and not locked:
+            # con GPU: la misma luz por píxel del combate (tejidos, piel, contraluz) y un farolillo de retrato
+            # arriba y delante que pone el brillo en los ojos
+            from .gpu import figure_light
+            pcs: list = []
+            alb, data, rx, ry = render_figure(d, pose, U, LIGHT_RIGS[1], ss=2, ow_px=max(1.5, U * 0.35), maps=True, pieces=pcs)
+            hx_, hy_ = pose["head"]
+            lan = (rx + (hx_ + 60) * d.scale * U, ry + (hy_ - 40) * d.scale * U, 0.5)
+            fig_img = PORTRAIT_BAKER(alb, data, [(ax, ay) + tuple(v) for ax, ay, *v in pcs],
+                                     figure_light(LIGHT_RIGS[1], GPU_RIGS[1]), (rx, ry), lantern=lan)
+        else:
+            fig_img, rx, ry = render_figure(d, pose, U, LIGHT_RIGS[1], ss=2, flat=flat)
         hx_, hy_ = pose["head"]
         head_x = rx + hx_ * d.scale * U
         head_y = ry + hy_ * d.scale * U

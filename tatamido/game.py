@@ -22,6 +22,7 @@ from .inputs import KEYMAP_P1, KEYMAP_P2, PlayerInput
 from .match import Match
 from .postfx import apply_lut, bloom
 from .replay import list_replays, load_replay, save_replay
+from . import render_fighter
 from .render_fighter import draw_figure_preview, draw_portrait
 from .ui import UISurface, draw as udraw, panel
 
@@ -48,6 +49,7 @@ class Game:
         self.renderer_pref = args.get("renderer") or self.save.get("renderer", "auto")
         self.screen = self._open_display(args)
         Dojo.baker = self.gpu.bake_figure if self.gpu is not None else None   # público horneado con luz por píxel
+        render_fighter.PORTRAIT_BAKER = Dojo.baker                             # y los retratos del menú
         pygame.display.set_caption(TITLE + ("  ·  GPU" if self.gpu else "  ·  CPU"))
         self.bg = pygame.Surface((RW, RH), pygame.SRCALPHA)
         self.fig = pygame.Surface((RW, RH), pygame.SRCALPHA)

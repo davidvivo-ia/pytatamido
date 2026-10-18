@@ -56,9 +56,17 @@ class Fighter:
         self.block_timer = 0           # frames desde que empezó a bloquear (ventana de parada)
         self.exhausted = False
         self.combo = 0
-        self.sweat = 0.0
-        self.redness = 0.0
-        self.dishevel = 0.0
+        # desgaste: en el primer asalto se parte de cero; después se arrastra (el sudor no se seca en el
+        # descanso, el pelo no se peina solo, los golpes dejan marca)
+        if full or not hasattr(self, "marks"):
+            self.sweat = 0.0
+            self.redness = 0.0
+            self.dishevel = 0.0
+            self.marks = {}
+        else:
+            self.sweat = min(1.0, 0.6 * self.sweat + 0.2)
+            self.redness *= 0.6
+            self.dishevel *= 0.85
         self.breath = 0.0
         self.anim_t = 0.0
         self.throw_partner: Optional["Fighter"] = None
@@ -407,6 +415,10 @@ class Fighter:
         else:
             self.combo_taken = 1
         self.take_damage(dmg, attacker.fd["id"])
+        # marca del golpe según la altura: pómulo y ceja arriba, costillas al medio, espinilla abajo
+        zone = {"high": ("pomulo", "ceja") if dmg >= 70 else ("pomulo",), "mid": ("costillas",), "low": ("espinilla",)}.get(m.height, ("costillas",))
+        z = zone[self.combo_taken % len(zone)]
+        self.marks[z] = min(1.0, self.marks.get(z, 0.0) + dmg / 260)
         self.kiai = min(KIAI_MAX, self.kiai + m.kiai_gain * 0.6)
         attacker.kiai = min(KIAI_MAX, attacker.kiai + m.kiai_gain)
         attacker.landed_hits += 1
