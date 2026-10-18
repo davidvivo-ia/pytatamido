@@ -675,8 +675,10 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                 pts, w, closed, taper = geo
                 P = [T(q) for q in pts]
                 if len(P) >= 2:
-                    val = (max(0, h0 - 22), pid, spec) if groove else (h0 + 4, pid, spec)
-                    wpx = max(1.0, w * k * (1.6 if groove else 1.0))
+                    # surco: pliegue o músculo ancho y poco profundo (una arruga, no un corte)
+                    gd = 12 if mat == "skin" else 8
+                    val = (max(0, h0 - gd), pid, spec) if groove else (h0 + 4, pid, spec)
+                    wpx = max(1.0, w * k * ((2.2 if mat == "skin" else 2.8) if groove else 1.0))
                     if pf is not None and not groove:
                         bp = [(x * inv, y * inv) for x, y in pf]
                     else:
@@ -688,7 +690,7 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
-                val = (max(0, h0 - 22), pid, spec) if groove else (h0 + 4, pid, spec)
+                val = (max(0, h0 - 10), pid, spec) if groove else (h0 + 4, pid, spec)
                 pygame.draw.circle(surf, val, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
     return pieces
 
@@ -1396,22 +1398,6 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     sleeve = lk.get("sleeve", 0.0) if top in ("gi", "kurtka", "changshan", "keikogi") else 0.0
     open_hand = (f.state == Fighter.THROWING or (f.state == Fighter.ATTACK and f.move is not None and f.move.anim == "grab")
                  or (lk.get("guard_open") and f.state in (Fighter.IDLE, Fighter.WALK, Fighter.INTRO)))
-    def arm_keys(L1, L2):
-        """Deltoides, tríceps detrás, bíceps delante, codo, masa del antebrazo y muñeca fina."""
-        ue = L1 / max(1e-6, L1 + L2)
-        back = [(0.0, up0 * 1.05), (ue * 0.45, up0 * 0.92 + upb * 0.6), (ue * 0.9, up1 * 1.05), (ue, up1 * 0.95),
-                (ue + (1 - ue) * 0.25, fo0 + fob * 0.5), (1.0, fo1)]
-        front = [(0.0, up0), (ue * 0.5, up0 * 0.9 + upb), (ue * 0.9, up1), (ue, up1 * 0.92),
-                 (ue + (1 - ue) * 0.22, fo0 * 1.05 + fob), (1.0, fo1)]
-        return back, front
-
-    def with_delt(keys_l, keys_r, D0, sh, rest, r0):
-        """Antepone el tramo del deltoides (de dentro del hombro a la articulación) a un perfil de brazo."""
-        Ld = dist(D0, sh)
-        tot = max(1e-6, Ld + rest)
-        f_ = lambda ks: [(0.0, r0)] + [((Ld + u * rest) / tot, v) for u, v in ks]
-        return f_(keys_l), f_(keys_r)
-
     def hand_frame(el, hd):
         fx_, fy_ = _norm(hd[0] - el[0], hd[1] - el[1])
         if fx_ == 0 and fy_ == 0:
@@ -1425,49 +1411,72 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         sk = C(skin, el[0], depth)
         fore_sk = mixc(sk, (205, 80, 70), min(0.4, 0.4 * red)) if not mono else sk
         L1, L2 = dist(sh, el), dist(el, hd)
+        fx_, fy_ = _norm(el[0] - sh[0], el[1] - sh[1])
+        cap = (sh[0] - fx_ * B["delt"] * 0.35, sh[1] - fy_ * B["delt"] * 0.35)     # remate del hombro, tapado por el torso
         if sleeve > 0:
-            slc = C(cloth, el[0], depth)
-            fig.ribbon(g, [el, _lerp2(el, hd, 0.5), hd], [(0, fo0 + fob * 0.5), (0.3, fo0 + fob * 0.6), (1, fo1)],
-                       [(0, fo0), (0.3, fo0 + fob), (1, fo1)], fore_sk, sheen=skin_sheen)
+            # antebrazo que asoma por la manga
+            fig.ribbon(g, [el, _lerp2(el, hd, 0.5), hd], [(0, fo0 + fob * 0.5), (0.3, fo0 + fob * 0.6), (0.85, fo1 * 0.95), (1, fo1 * 0.9)],
+                       [(0, fo0), (0.3, fo0 + fob), (0.85, fo1 * 0.95), (1, fo1 * 0.9)], fore_sk, sheen=skin_sheen)
             fig.m("cloth")
+            slc = C(cloth, el[0], depth)
             cut = _lerp2(el, hd, sleeve)
-            wide = 3.6 if top != "changshan" else 1.6
-            ue = L1 / max(1e-6, L1 + dist(el, cut))
-            D0 = _lerp2(sh, N, 0.16)
-            kl_, kr_ = with_delt([(0, B["delt"] + 2.0), (ue * 0.6, up0 + 2.2), (ue, up1 + 3.2), (1, fo1 + wide)],
-                                 [(0, B["delt"] + 1.6), (ue * 0.6, up0 + 2.6), (ue, up1 + 2.6), (1, fo1 + wide - 0.4)],
-                                 D0, sh, L1 + dist(el, cut), B["delt"] + 1.0)
-            fig.ribbon(g, [D0, sh, el, cut], kl_, kr_, slc, sheen=0.5, edge=True)
+            wide = 3.4 if top != "changshan" else 1.4
+            Ls = dist(cap, sh) + L1 + dist(el, cut)
+            us, ue = dist(cap, sh) / Ls, (dist(cap, sh) + L1) / Ls
+            # manga de caída: hombro redondo, sin bulto en el codo, se abre hacia el puño y cuelga por debajo
+            fig.ribbon(g, [cap, sh, el, cut],
+                       [(0, B["delt"] + 0.5), (us, B["delt"] + 0.6), (ue * 0.75, up0 + 2.2), (ue, up1 + 2.8), (1, fo1 + wide + 0.6)],
+                       [(0, B["delt"] + 0.3), (us, B["delt"] + 0.4), (ue * 0.75, up0 + 1.9), (ue, up1 + 2.2), (1, fo1 + wide - 0.2)],
+                       slc, sheen=0.5, edge=True)
+            # puño de la manga: refuerzo con pespuntes
+            fig.m("cloth", pat="stitch")
+            c0 = _lerp2(el, cut, 0.84)
+            fig.ribbon(g, [c0, _lerp2(c0, cut, 0.5), cut], [(0, fo1 + wide + 0.5), (1, fo1 + wide + 0.75)],
+                       [(0, fo1 + wide - 0.2), (1, fo1 + wide - 0.05)], shade(slc, 0.95), sheen=0.4)
             fig.m("cloth", True)
-            # pliegues de la manga: en zigzag junto al codo, como tela que se recoge
-            fig.line(g, [_lerp2(sh, el, 0.5), _lerp2(sh, el, 0.82), _lerp2(el, cut, 0.12)], shade(slc, 0.78), 0.45)
-            fig.line(g, [_lerp2(el, cut, 0.25), _lerp2(el, cut, 0.4)], shade(slc, 0.8), 0.4)
-            fig.line(g, [_lerp2(sh, el, 0.2), _lerp2(sh, el, 0.38)], shade(slc, 0.82), 0.35)
+            fig.line(g, [_lerp2(sh, el, 0.72), _lerp2(el, cut, 0.06), _lerp2(el, cut, 0.22)], shade(slc, 0.8), 0.9)   # pliegue del codo
             if top == "changshan":
                 fig.m("cloth")
                 fig.line(g, [_lerp2(el, cut, 0.9), cut], C(lk["accent"], el[0], depth), 0.5)
         else:
             fig.m("skin")
-            kb, kf = arm_keys(L1, L2)
-            kb[0] = (0.0, B["delt"] * 1.02)
-            kf[0] = (0.0, B["delt"] * 0.92)
-            D0 = _lerp2(sh, N, 0.16)
-            kb, kf = with_delt(kb, kf, D0, sh, L1 + L2, B["delt"] * 0.8)
-            fig.ribbon(g, [D0, sh, el, hd], kb, kf, fore_sk if red > 0.15 else sk, sheen=skin_sheen)
+            arm_c = fore_sk if red > 0.15 else sk
+            ue = L1 / max(1e-6, L1 + L2)
+            # brazo: tríceps detrás, bíceps delante, codo estrecho, masa del antebrazo y muñeca fina
+            back = [(0.0, up0 * 1.02), (ue * 0.4, up0 * 0.98 + upb * 0.7), (ue * 0.85, up1 * 0.95), (ue, up1 * 0.82),
+                    (ue + (1 - ue) * 0.22, fo0 + fob * 0.45), (ue + (1 - ue) * 0.7, fo1 * 1.1), (1.0, fo1 * 0.85)]
+            front = [(0.0, up0 * 0.95), (ue * 0.55, up0 * 0.92 + upb), (ue * 0.88, up1 * 0.92), (ue, up1 * 0.8),
+                     (ue + (1 - ue) * 0.25, fo0 * 1.02 + fob), (ue + (1 - ue) * 0.72, fo1 * 1.08), (1.0, fo1 * 0.85)]
+            fig.ribbon(g, [sh, el, hd], back, front, arm_c, sheen=skin_sheen)
+            # deltoides: la cápsula del hombro que cubre la articulación
+            dtip = _lerp2(sh, el, 0.45)
+            fig.ribbon(g, [cap, sh, dtip], [(0, B["delt"] * 0.6), (0.35, B["delt"] * 0.92), (1, up0 * 0.55)],
+                       [(0, B["delt"] * 0.55), (0.35, B["delt"] * 0.85), (1, up0 * 0.5)], arm_c, sheen=skin_sheen)
             if "definido" in ex or lk["body"] in ("atleta", "pesado", "fibroso"):
                 fig.m("skin", True)
-                fig.line(g, [_lerp2(sh, el, 0.15), _lerp2(sh, el, 0.4), _lerp2(sh, el, 0.62)], shade(sk, 0.82), 0.32)
-                fig.line(g, [_lerp2(el, hd, 0.12), _lerp2(el, hd, 0.42)], shade(sk, 0.84), 0.28)
+                fig.line(g, [_lerp2(sh, el, 0.3), _lerp2(sh, el, 0.55), _lerp2(sh, el, 0.75)], shade(sk, 0.82), 0.5)
+                fig.line(g, [_lerp2(el, hd, 0.1), _lerp2(el, hd, 0.4)], shade(sk, 0.84), 0.45)
         if "prajied" in ex:
             fig.m("cloth")
             c1, c2 = lk["band"]
-            pa = _lerp2(sh, el, 0.3)
-            pb = _lerp2(sh, el, 0.42)
-            fig.tube(g, pa, pb, up0 + 0.9, up0 + 0.8, C(c1, el[0], depth), sheen=0.8)
+            pa = _lerp2(sh, el, 0.34)
+            pb = _lerp2(sh, el, 0.44)
+            # cordón trenzado que abraza el bíceps: una banda, no un disco
+            nx_, ny_ = -fy_, fx_
+            ra_, rb_ = up0 + 0.45, up0 + 0.35
+            band = [(pa[0] + nx_ * ra_, pa[1] + ny_ * ra_), (pb[0] + nx_ * rb_, pb[1] + ny_ * rb_),
+                    (pb[0] - nx_ * rb_, pb[1] - ny_ * rb_), (pa[0] - nx_ * ra_, pa[1] - ny_ * ra_)]
+            fig.poly(g, band, C(c1, el[0], depth), sheen=0.8, smooth=0)
+            fig.m("cloth", True)
+            for q_ in (0.3, 0.7):
+                m_ = _lerp2(pa, pb, q_)
+                fig.line(g, [(m_[0] + nx_ * ra_, m_[1] + ny_ * ra_), (m_[0] - nx_ * ra_, m_[1] - ny_ * ra_)], shade(C(c1, el[0], depth), 0.8), 0.3)
+            fig.m("cloth")
             fig.line(g, [_lerp2(pa, pb, 0.5), (pa[0] - 2 - vxl, pa[1] + 5), (pa[0] - 4 - vxl * 1.5, pa[1] + 10)], C(c2, el[0], depth), 0.8)
         # mano
         HF = hand_frame(el, hd)
         hs = B["hand"] / 4.3
+        nail = mixc(fore_sk, (238, 210, 200), 0.35)
         if "guantes" in ex:
             fig.m("leather")
             gc = C("#1A1A1A", hd[0], depth)
@@ -1478,21 +1487,36 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.line(g, [HF(6.0 * hs, -3.0 * hs), HF(7.4 * hs, 0), HF(6.0 * hs, 3.0 * hs)], shade(gc, 1.6), 0.3)
         elif open_hand:
             fig.m("skin")
-            palm = [HF(a * hs, b * hs) for a, b in ((-2, -3.2), (4, -3.6), (10, -2.6), (11.2, -0.5), (10.2, 1.6), (4, 3.1), (-2, 3.0))]
+            H_ = lambda a, b: HF(a * hs, b * hs)
+            palm = [H_(a, b) for a, b in ((-1.5, -2.8), (3.5, -3.7), (8.6, -3.3), (9.4, -1.0), (9.2, 1.6), (8.4, 3.3), (3.5, 3.4), (-1.5, 2.7))]
             fig.poly(g, palm, fore_sk, sheen=skin_sheen, smooth=2)
+            # dedos delante de la palma, de meñique a índice: dos falanges con curva y contorno propio
+            for bk, ln, rr in ((2.45, 5.6, 0.82), (0.82, 7.0, 0.9), (-0.82, 7.6, 0.93), (-2.45, 7.0, 0.9)):
+                k0 = H_(7.6, bk)
+                k1 = H_(7.6 + ln * 0.6, bk + 0.3 + ln * 0.05)
+                k2 = H_(7.6 + ln * 1.0, bk + 1.2 + ln * 0.12)
+                fig.tube(g, k0, k1, rr * hs, rr * 0.93 * hs, fore_sk, sheen=skin_sheen * 0.6)
+                fig.tube(g, k1, k2, rr * 0.93 * hs, rr * 0.78 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            # pulgar: sale de la base de la palma y se abre hacia delante
+            t0, t1, t2 = H_(2.0, -2.6), H_(5.4, -4.9), H_(8.4, -5.4)
+            fig.tube(g, t0, t1, 1.35 * hs, 1.15 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            fig.tube(g, t1, t2, 1.12 * hs, 0.9 * hs, fore_sk, sheen=skin_sheen * 0.6)
             fig.m("skin", True)
-            for b in (-1.6, -0.1, 1.3):
-                fig.line(g, [HF(5.8 * hs, b * hs), HF(10.2 * hs, b * hs * 0.9)], shade(fore_sk, 0.75), 0.28)
-            fig.m("skin")
-            fig.line(g, [HF(1.0 * hs, -3.2 * hs), HF(4.0 * hs, -5.0 * hs), HF(6.2 * hs, -5.2 * hs)], fore_sk, 1.5 * hs, taper=False)
+            fig.line(g, [H_(3.0, 0.8), H_(6.0, 0.2), H_(8.6, 0.9)], shade(fore_sk, 0.8), 0.45)        # línea de la palma
         else:
             fig.m("skin")
-            fist = [HF((a - 3) * hs, b * hs) for a, b in ((-1.5, -3.6), (3.5, -4.4), (7.5, -3.2), (8.4, 0), (7.5, 3.4), (3, 4.2), (-1.5, 3.6))]
+            H_ = lambda a, b: HF((a - 2.6) * hs, b * hs)
+            fist = [H_(a, b) for a, b in ((-1.6, -3.4), (3.0, -4.1), (6.6, -3.9), (7.9, -2.4), (8.2, 0.6), (7.6, 3.3), (5.4, 4.3), (1.2, 4.0), (-1.6, 3.2))]
             fig.poly(g, fist, fore_sk, sheen=skin_sheen, smooth=2)
-            fig.m("skin", True)
-            for b in (-2.2, -0.4, 1.4):
-                fig.line(g, [HF(3.4 * hs, b * hs), HF(5.0 * hs, (b + 0.8) * hs)], shade(fore_sk, 0.72), 0.28)   # dedos
-            fig.line(g, [HF(-1.0 * hs, -3.0 * hs), HF(1.8 * hs, -2.0 * hs), HF(3.6 * hs, -0.6 * hs)], shade(fore_sk, 0.75), 0.35)  # pulgar
+            # dedos plegados sobre la cara del puño: cuatro falanges redondeadas, cada una con su contorno
+            for i, bk in enumerate((-2.55, -0.85, 0.85, 2.55)):
+                r_ = (0.98 - 0.06 * abs(i - 1.5)) * hs
+                fig.tube(g, H_(8.0, bk), H_(5.2, bk + 0.5), r_, r_ * 0.95, fore_sk, sheen=skin_sheen * 0.6)
+            # pulgar cruzado sobre índice y corazón
+            fig.tube(g, H_(1.0, -3.4), H_(4.4, -2.3), 1.3 * hs, 1.15 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            fig.tube(g, H_(4.4, -2.3), H_(6.6, -0.2), 1.12 * hs, 0.95 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            fig.m("skin")
+            fig.dot(g, H_(6.6, -0.2), 0.42 * hs, nail)
         if "manchas" in ex:
             fig.dot(g, (hd[0] - 1, hd[1] - 1), 0.5, shade(fore_sk, 0.8))
     return fig

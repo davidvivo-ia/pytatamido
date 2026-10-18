@@ -293,14 +293,14 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         float v = vis(0.8, pxcm);
         float t = hash12(floor(c) + seed);
         float zone = 0.55 + 0.45 * smoothstep(0.3, 0.7, vnoise(q * 0.07 + seed));   // el grano se marca más donde tira la tela
-        h = (grain * grain * 0.5 - 0.18) * v * zone + drape(q, seed, 1.25) * 0.9;
-        ak = 1. + v * zone * (0.09 * grain - 0.05 + 0.03 * (t - 0.5));
-        sk = mix(1., 0.55 + 0.6 * grain, v);
+        h = (grain * grain * 0.3 - 0.1) * v * zone + drape(q, seed, 1.25) * 0.5;
+        ak = 1. + v * zone * (0.045 * grain - 0.025 + 0.015 * (t - 0.5));
+        sk = mix(1., 0.7 + 0.4 * grain, v);
     } else if (pat == 2) {                           // sarga: costillas en diagonal
         float wale = bump1((q.x * 0.7 + q.y) / 1.1);
         float v = vis(1.1, pxcm);
-        h = wale * 0.35 * v + drape(q, seed, 1.0) * 0.85;
-        ak = 1. + v * (0.08 * wale - 0.04);
+        h = wale * 0.2 * v + drape(q, seed, 1.0) * 0.5;
+        ak = 1. + v * (0.04 * wale - 0.02);
     } else if (pat == 3) {                           // lona de cesta: parejas de hilos que alternan
         vec2 c = q / 1.6;
         vec2 ci = floor(c), f = fract(c);
@@ -308,14 +308,14 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         float rib = bump1(u * 2.);
         float e = smoothstep(0., 0.12, min(min(f.x, 1. - f.x), min(f.y, 1. - f.y)));
         float v = vis(0.8, pxcm);
-        h = (rib * e * 0.45 - 0.2) * v + drape(q, seed, 1.5) * 0.8;
-        ak = 1. + v * (0.11 * rib * e - 0.06);
+        h = (rib * e * 0.28 - 0.12) * v + drape(q, seed, 1.5) * 0.5;
+        ak = 1. + v * (0.05 * rib * e - 0.03);
     } else if (pat == 4) {                           // punto de canalé
         float y = q.y / 0.9;
         float rib = bump1(y);
         float v = vis(0.9, pxcm);
-        h = rib * 0.4 * v + drape(q, seed, 0.8) * 0.6;
-        ak = 1. + v * (0.08 * rib - 0.04);
+        h = rib * 0.25 * v + drape(q, seed, 0.8) * 0.4;
+        ak = 1. + v * (0.04 * rib - 0.02);
     } else if (pat == 5) {                           // damasco de seda: medallones tono sobre tono
         vec2 c = q / 8.;
         c.x += mod(floor(c.y), 2.) * 0.5;
@@ -339,8 +339,8 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         float slub = smoothstep(0.55, 0.8, vnoise(vec2(ri * 3.7, q.y * 0.22 + seed)));
         float warp = bump1(q.y / 1.3);
         float v = vis(1.1, pxcm);
-        h = (thread * 0.35 + warp * 0.12 + slub * 0.3) * v + drape(q, seed, 1.3) * 0.75;
-        ak = 1. + v * (0.1 * (hash12(vec2(ri, seed + 3.)) - 0.5) + 0.06 * slub - 0.05 * (1. - thread));
+        h = (thread * 0.18 + warp * 0.08 + slub * 0.18) * v + drape(q, seed, 1.3) * 0.5;
+        ak = 1. + v * (0.035 * (hash12(vec2(ri, seed + 3.)) - 0.5) + 0.03 * slub - 0.02 * (1. - thread));
     } else if (pat == 7 || pat == 16) {              // cinturón: pespuntes paralelos a lo largo
         float rows = q.y / 0.7;
         float line = 1. - smoothstep(0.06, 0.2, abs(fract(rows) - 0.5));
@@ -398,8 +398,8 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
     } else if (pat == 15) {                          // algodón de tafetán
         float wv = bump1(q.x / 0.9) * bump1(q.y / 0.9);
         float v = vis(0.9, pxcm);
-        h = wv * 0.25 * v + drape(q, seed, 1.1) * 0.8;
-        ak = 1. + v * (0.05 * wv - 0.025);
+        h = wv * 0.15 * v + drape(q, seed, 1.1) * 0.5;
+        ak = 1. + v * (0.03 * wv - 0.015);
     }
     // ── segunda octava: el hilo. Sólo aparece cuando hay píxeles para verlo (1440p, 4K, Modo Foto) ──
     float vf = vis(0.32, pxcm);
@@ -489,11 +489,11 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float br2 = vnoise(vec2(q.x * 0.45, q.y * 2.1) + seed * 5.7) * vis(0.5, pxcm);
     // ── rampa de dos tonos (anime 2026): borde pintado, sombra de color desplazado ──
     float soft = mat == 1 ? 0.15 : 0.09;
-    float term = ndl + paint * ((br - 0.5) * 0.32 + (br2 - 0.25) * 0.14);
+    float term = ndl + paint * ((br - 0.5) * 0.16 + (br2 - 0.25) * 0.05);
     float lit = smoothstep(-0.08 - soft, -0.08 + soft, term) * mix(1.0, ao, 0.6);
     vec3 amb = mix(uBounce, uSky, N.y * 0.5 + 0.5) * ao;
     vec3 shTint = mat == 1 ? vec3(1.06, 0.74, 0.68) : mat == 5 ? vec3(0.9, 0.86, 1.05) : vec3(0.84, 0.9, 1.08);
-    vec3 shadowCol = alb * (amb * 1.15 + uKey * 0.1) * shTint * (1. + paint * 0.16 * (br - 0.5));
+    vec3 shadowCol = alb * (amb * 1.15 + uKey * 0.1) * shTint * (1. + paint * 0.06 * (br - 0.5));
     vec3 litCol = alb * (amb + uKey * (0.82 + 0.18 * max(ndl, 0.)));
     vec3 col = mix(shadowCol, litCol, lit);
     if (mat == 1) {
