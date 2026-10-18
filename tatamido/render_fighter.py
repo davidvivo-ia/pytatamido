@@ -559,8 +559,8 @@ def _axis(P):
 def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_base=1, pieces=None):
     """Mapa de datos para la luz por píxel: R altura, G pieza, B brillo.
 
-    Cada grupo de profundidad tiene su altura base; cada pieza añade una cúpula interior y los
-    surcos (músculos, pliegues, nudillos) la rebajan. La GPU deriva normales de esta altura.
+    Cada grupo de profundidad tiene su altura base y los surcos (músculos, pliegues, nudillos) la
+    rebajan. El volumen de cada miembro lo calcula la GPU con la distancia al contorno.
     G identifica la pieza (0 = tinta): `pieces` recibe su ancla, eje, material y tejido para que la GPU
     pinte el tejido en el espacio propio de cada pieza, orientado a lo largo de ella y sin resbalar.
     Las cintas (brazos, piernas) se parten en dos piezas por la articulación central.
@@ -634,8 +634,7 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                 pts, w, closed, taper = geo
                 A, B = T(pts[0]), T(pts[-1])
                 pid = piece(_lerp2(A, B, 0.5), math.atan2(B[1] - A[1], B[0] - A[0]), w * k, mat, pat, idx)
-            base = (h0, pid, spec)
-            dome = (min(255, h0 + 18), pid, spec)
+            base = (h0, pid, spec)        # el volumen de cada pieza lo pone la GPU (distancia al contorno)
 
             def split_draw(pts, h):
                 """Cinta: el polígono entero con la pieza de arriba y la mitad baja con la de abajo."""
@@ -649,7 +648,6 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
             if kind == "ribbon":
                 frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
                 split_draw([(x * inv, y * inv) for x, y in pf] if pf is not None else ribbon_pts(frame, kl, kr, k), h0)
-                split_draw(ribbon_pts(frame, kl, kr, k, kk=0.5), min(255, h0 + 18))
             elif kind == "tube":
                 a, b, ra, rb, bu, bt, side = geo
                 A, B = T(a), T(b)
@@ -657,21 +655,13 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                     pygame.draw.polygon(surf, base, [(x * inv, y * inv) for x, y in pf])     # misma silueta que el albedo
                 else:
                     pygame.draw.polygon(surf, base, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac))
-                if (ra + rb) * k > 4:
-                    pygame.draw.polygon(surf, dome, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac, k=0.5))
             elif kind == "poly":
                 P = [T(q) for q in geo]
                 pygame.draw.polygon(surf, base, P)
-                if outline:
-                    cx = sum(q[0] for q in P) / len(P)
-                    cy = sum(q[1] for q in P) / len(P)
-                    pygame.draw.polygon(surf, dome, [(cx + (q[0] - cx) * 0.6, cy + (q[1] - cy) * 0.66) for q in P])
             elif kind == "circle":
                 c, r = geo
                 cc = T(c)
                 pygame.draw.circle(surf, base, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
-                if r * k > 3:
-                    pygame.draw.circle(surf, dome, (int(cc[0]), int(cc[1])), max(1, int(r * k * 0.55)))
             elif kind == "line":
                 pts, w, closed, taper = geo
                 P = [T(q) for q in pts]

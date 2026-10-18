@@ -870,6 +870,8 @@ class Match:
         if not self.access.get("shake", True):
             extra["tilt"] = 0.0
         extra["pieces"] = pieces
+        if fr:
+            extra["fig_rect"] = _union(fr)              # la GPU acota a esta zona el campo de distancias
         if dirty is not None:
             new = dict(bg=_union(getattr(self.dojo, "drawn", [])), fig=_union(fr))
             dirty["new"] = new

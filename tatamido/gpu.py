@@ -18,6 +18,7 @@ La GPU hace lo que el CPU no puede a 60 fps:
 from __future__ import annotations
 
 import math
+import os
 from typing import List, Optional
 
 import pygame
@@ -76,6 +77,7 @@ uniform float uTime;
 uniform vec3 uKey3, uSky, uBounce;
 uniform float uFigLit;
 uniform float uDimBg;         // menús: oscurece el fondo pero no a los luchadores
+uniform float uDebugN;        // depuración: pinta las normales
 uniform float uTexI;          // intensidad de las texturas procedurales (0 = lisas)
 uniform vec4 uCam;            // cam.x, zoom, base_y (px), shake_x
 uniform float uDepthScale;    // px por unidad de profundidad
@@ -258,9 +260,39 @@ vec3 shadeFloor(vec2 p, out float coc) {
 }
 
 // ── luz por píxel de los luchadores ──────────────────────────────────────────
-// tFigD: R altura (grupos de profundidad + cúpula por pieza), G material, B brillo.
+// tFigD: R altura (grupos de profundidad y surcos), G pieza, B brillo. El volumen sale de tForm.
 // 0 tinta · 1 piel · 2 algodón · 3 satén/lycra · 4 cuero · 5 pelo · 6 ojos
 float figH(vec2 q) { return Lp(tFigD, q, 1.0 + LB()).r * 0.5 + Lp(tFigD, q, 2.3 + LB()).r * 0.5; }
+
+// ── volumen: pendiente de la forma (pase FORM sobre el campo de distancias, ya suavizada) ──
+uniform sampler2D tForm;
+vec2 formSlope(vec2 p) { vec4 F = texture(tForm, p / uRes); return F.w > 1e-3 ? F.xy / F.w : vec2(0.); }
+// Altura de la figura en px hacia la cámara: capa de profundidad (brazo delante del torso) + perfil.
+float figHeight(vec2 q, float kg) {
+    vec4 F = texture(tForm, q / uRes);
+    float hp = F.w > 1e-3 ? F.z / F.w : 0.;
+    float g = texelFetch(tFigD, ivec2(clamp(q, vec2(0.), uRes - 1.)), 0).r * 255.;
+    return g * kg + hp;
+}
+// Autosombra: ¿algo de la propia figura tapa la luz? Marcha por el campo de alturas hacia la luz.
+float selfShadow(vec2 p, vec3 L, float pxcm) {
+    vec2 lxy = vec2(L.x, -L.y);
+    float lh = length(lxy);
+    if (lh < 0.05) return 1.;
+    vec2 dir = lxy / lh;
+    float rise = L.z / lh;                                  // px de altura por px de avance
+    float kg = 0.3 * pxcm;                                  // una unidad de capa ≈ 3 mm
+    float h0 = figHeight(p, kg) + 0.6 * pxcm;
+    float maxT = 42. * pxcm;
+    float jit = hash12(p * 0.73);
+    float occ = 0.;
+    for (int i = 0; i < 12; i++) {
+        float t = maxT * pow((float(i) + jit) / 12., 1.6) + 1.5 * uRS;
+        float dh = figHeight(p + dir * t, kg) - (h0 + t * rise);
+        occ = max(occ, smoothstep(0., 2.5 * pxcm, dh));
+    }
+    return 1. - occ;
+}
 
 // ── tejidos diseñados, en el espacio propio de cada pieza ────────────────────
 // El mapa de datos guarda en G el número de pieza; tPieces trae su ancla en pantalla, su eje, los
@@ -455,12 +487,15 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float hx = figH(p + vec2(e, 0.)) - figH(p - vec2(e, 0.));
     float hy = figH(p + vec2(0., e)) - figH(p - vec2(0., e));
     float bump = mat == 5 ? 5.0 : 7.0;
-    // forma amplia: la altura muy desenfocada redondea brazos, piernas y torso hacia la silueta
+    // forma: cilindro de la anchura local real (campo de distancias); el pelo y las telas sueltas, menos
+    float round_ = mat == 5 ? 0.7 : mat == 6 ? 0. : 1.0;
+    vec2 fs = formSlope(p) * round_;                       // pendiente de la forma
+    // la altura desenfocada sólo aporta los escalones entre capas (brazo sobre torso)
     float e2 = 6.0 * uRS, l2 = 3.6 + LB();
     float bx = Lp(tFigD, p + vec2(e2, 0.), l2).r - Lp(tFigD, p - vec2(e2, 0.), l2).r;
     float by = Lp(tFigD, p + vec2(0., e2), l2).r - Lp(tFigD, p - vec2(0., e2), l2).r;
-    float formK = 2.6;
-    vec3 N0 = normalize(vec3(-hx * bump - bx * formK, hy * bump + by * formK, 1.0));
+    float formK = 0.9;
+    vec3 N0 = normalize(vec3(fs.x - hx * bump - bx * formK, fs.y + hy * bump + by * formK, 1.0));
     // tejido: valor y pendiente (diferencias de medio píxel), girada de la pieza a la pantalla
     float h, ak, sk, wear, h1, h2, a_, s_, w_;
     weave(pat, q, pxcm, seed, wcm, h, ak, sk, wear);
@@ -470,13 +505,14 @@ vec3 litFighter(vec2 p, vec4 fg) {
     vec2 gq = vec2(h1 - h, h2 - h) / es;
     vec2 gs = (t * gq.x + nn * gq.y) / pxcm * uTexI;
     float tb = mat == 4 ? 0.5 : mat == 5 ? 0.55 : 0.7;
-    vec3 N = normalize(vec3(-hx * bump - bx * formK - gs.x * tb, hy * bump + by * formK + gs.y * tb, 1.0));
+    vec3 N = normalize(vec3(fs.x - hx * bump - bx * formK - gs.x * tb, fs.y + hy * bump + by * formK + gs.y * tb, 1.0));
     alb *= mix(1., ak, uTexI);
     if (wear > 0.) {
         float fib = 0.75 + 0.25 * bump1(q.y / 0.35 + 0.3 * q.x);
         alb = mix(alb, vec3(0.34, 0.32, 0.29) * fib, wear * uTexI);
     }
     if (mat == 4) alb *= 1. + 0.45 * smoothstep(0.3, 0.62, 1. - N0.z) * uTexI;     // cuero gastado en los cantos
+    if (uDebugN > 0.5 && uDebugN < 1.5) return toLin(N * 0.5 + 0.5) / max(uTint, vec3(0.05));
 
     float ao = 1. - clamp((Lp(tFigD, p, 4.2 + LB()).r - fd.r) * 2.2, 0., 0.5);
     vec3 V = vec3(0., 0., 1.);
@@ -491,11 +527,14 @@ vec3 litFighter(vec2 p, vec4 fg) {
     // ── rampa de dos tonos (anime 2026): borde pintado, sombra de color desplazado ──
     float soft = mat == 1 ? 0.15 : 0.09;
     float term = ndl + paint * ((br - 0.5) * 0.16 + (br2 - 0.25) * 0.05);
-    float lit = smoothstep(-0.08 - soft, -0.08 + soft, term) * mix(1.0, ao, 0.6);
+    float shadowSelf = mat == 6 ? 1. : selfShadow(p, L, pxcm);
+    if (uDebugN > 1.5) return toLin(uDebugN > 2.5 ? vec3(fract(figHeight(p, 0.3 * pxcm) / (60. * pxcm))) : vec3(shadowSelf)) / max(uTint, vec3(0.05));
+    float lit = smoothstep(-0.02 - soft, -0.02 + soft, term) * mix(1.0, ao, 0.6) * mix(1., shadowSelf, 0.9);
     vec3 amb = mix(uBounce, uSky, N.y * 0.5 + 0.5) * ao;
     vec3 shTint = mat == 1 ? vec3(1.06, 0.74, 0.68) : mat == 5 ? vec3(0.9, 0.86, 1.05) : vec3(0.84, 0.9, 1.08);
     vec3 shadowCol = alb * (amb * 1.15 + uKey * 0.1) * shTint * (1. + paint * 0.06 * (br - 0.5));
-    vec3 litCol = alb * (amb + uKey * (0.82 + 0.18 * max(ndl, 0.)));
+    // cara iluminada con gradiente de forma (medio tono hacia el terminador, pleno donde mira a la luz)
+    vec3 litCol = alb * (amb + uKey * (0.58 + 0.5 * smoothstep(-0.05, 0.85, ndl)));
     vec3 col = mix(shadowCol, litCol, lit);
     if (mat == 1) {
         col += alb * uKey * vec3(1.0, 0.3, 0.16) * 1.0 * lit * (1. - lit);              // dispersión en el borde de sombra
@@ -686,6 +725,108 @@ void main() {
     // los cuerpos están delante del aire iluminado: no se lavan con la neblina
     acc *= 1. - 0.9 * texture(tFig, q).a;
     frag = vec4(vec3(acc / 96. * 3.), 1.);
+}
+"""
+
+# ── distancia al contorno (jump flood) ─────────────────────────────────────────
+# Semillas: píxeles de tinta o vacíos (fuera de la figura). Cada texel acaba guardando la semilla más
+# cercana; con ella el shader sabe a qué distancia y en qué dirección está el borde de su miembro y le
+# da la normal de un cilindro de la anchura local real (brazo, pierna, torso, cabeza).
+JFA_INIT = COMMON + """
+uniform sampler2D tFig, tFigD;
+uniform float uK;                 // píxeles de la imagen por texel del campo
+void main() {
+    ivec2 c = ivec2(gl_FragCoord.xy);
+    ivec2 sz = textureSize(tFig, 0);
+    bool seed = false;
+    for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+        ivec2 q = min(ivec2(vec2(c) * uK) + ivec2(i, j) * int(uK > 1.5), sz - 1);
+        float a = texelFetch(tFig, q, 0).a;
+        float id = texelFetch(tFigD, q, 0).g;
+        seed = seed || a < 0.5 || id < 0.5 / 255.;
+    }
+    frag = vec4(seed ? gl_FragCoord.xy : vec2(-1e6), 0., 1.);
+}
+"""
+
+JFA_STEP = COMMON + """
+uniform sampler2D tSeed;
+uniform int uStep;
+void main() {
+    ivec2 c = ivec2(gl_FragCoord.xy);
+    ivec2 sz = textureSize(tSeed, 0);
+    vec2 best = vec2(-1e6);
+    float bd = 1e20;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+        ivec2 q = c + ivec2(i, j) * uStep;
+        if (q.x < 0 || q.y < 0 || q.x >= sz.x || q.y >= sz.y) continue;
+        vec2 sd = texelFetch(tSeed, q, 0).xy;
+        if (sd.x < -1e5) continue;
+        vec2 d = sd - gl_FragCoord.xy;
+        float dd = dot(d, d);
+        if (dd < bd) { bd = dd; best = sd; }
+    }
+    frag = vec4(best, 0., 1.);
+}
+"""
+
+# Pendiente de la forma por texel del campo: cilindro de la anchura local. d es la distancia al borde; la
+# semianchura local se busca hacia dentro (el máximo de la distancia en la dirección contraria al borde:
+# la cresta del miembro). En la cresta la normal mira a cámara; en el borde, de canto. Un contorno que
+# pertenece a una capa de encima (el brazo sobre el pecho) apenas curva lo de debajo.
+FORM = COMMON + """
+uniform sampler2D tJfa, tFigD, tPieces;
+uniform float uJfaK;
+uniform vec2 uRes;
+vec2 seedAt(vec2 p) { return texelFetch(tJfa, ivec2(p / uJfaK), 0).xy * uJfaK; }
+float distAt(vec2 p) { vec2 s = seedAt(p); return s.x < -1e4 ? 0. : length(s - p); }
+void main() {
+    vec2 own = texelFetch(tJfa, ivec2(gl_FragCoord.xy), 0).xy;
+    vec2 p = gl_FragCoord.xy * uJfaK;
+    ivec2 ip = ivec2(min(p, uRes - 1.));
+    vec4 fd = texelFetch(tFigD, ip, 0);
+    int id = int(fd.g * 255. + 0.5);
+    if (id == 0 || own.x < -1e4 || distance(own, gl_FragCoord.xy) < 0.01) { frag = vec4(0.); return; }
+    float pxcm = max(texelFetch(tPieces, ivec2(id, 0), 0).w, 0.05);
+    vec2 sp = own * uJfaK;
+    vec2 dv = sp - p;
+    float d = length(dv);
+    vec2 o = dv / max(d, 1e-3);
+    float cap = 24. * pxcm;
+    float w = d, t = max(d, 1.) * 0.5;
+    for (int i = 0; i < 8; i++) {
+        if (t > cap * 2.2) break;
+        float dq = distAt(p - o * t);
+        w = max(w, dq);
+        if (dq < w * 0.55) break;                       // pasada la cresta
+        t *= 1.5;
+    }
+    float we = min(w, cap);
+    float sn = clamp(1. - d / max(we, 1.), 0., 1.);
+    float hprof = we * sqrt(1. - sn * sn) * 0.8;          // altura del perfil (px): para la autosombra
+    float inkH = texelFetch(tFigD, ivec2(clamp(sp, vec2(0.), uRes - 1.)), 0).r;
+    sn *= mix(1., 0.22, step(fd.r + 0.05, inkH + 34. / 255.));
+    vec2 slope = vec2(sn * o.x, -sn * o.y) / max(sqrt(1. - sn * sn), 0.3);
+    frag = vec4(slope, hprof, 1.);
+}
+"""
+
+# Suavizado de la pendiente con máscara (sólo dentro de las figuras): bordes sin escalones.
+FORM_BLUR = COMMON + """
+uniform sampler2D tSrc;
+uniform vec2 uDir;
+void main() {
+    ivec2 c = ivec2(gl_FragCoord.xy);
+    ivec2 sz = textureSize(tSrc, 0);
+    vec4 own = texelFetch(tSrc, c, 0);
+    if (own.w < 1e-3) { frag = vec4(0.); return; }
+    vec4 acc = vec4(0.);
+    for (int i = -3; i <= 3; i++) {
+        ivec2 q = clamp(c + ivec2(uDir * float(i)), ivec2(0), sz - 1);
+        float wgt = 1. - abs(float(i)) / 4.;
+        acc += texelFetch(tSrc, q, 0) * wgt;
+    }
+    frag = acc / max(acc.w, 1e-4);
 }
 """
 
@@ -978,6 +1119,10 @@ class GPURenderer:
         self.p_final, self.v_final = prog(FINAL)
         self.p_present, self.v_present = prog(PRESENT)
         self.p_bake, self.v_bake = prog(BAKE)
+        self.p_jinit, self.v_jinit = prog(JFA_INIT)
+        self.p_jstep, self.v_jstep = prog(JFA_STEP)
+        self.p_form, self.v_form = prog(FORM)
+        self.p_fblur, self.v_fblur = prog(FORM_BLUR)
 
         def tex(size, comps=4, dtype="f1", mip=False):
             t = ctx.texture(size, comps, dtype=dtype)
@@ -1017,6 +1162,77 @@ class GPURenderer:
         self.t_out = tex((W, H))
         self.f_out = ctx.framebuffer([self.t_out])
         self._swz = None
+        self.jfa = self._jfa_targets((max(1, W // 2), max(1, H // 2)))
+
+    def _jfa_targets(self, size):
+        """Dos campos de semillas (ida y vuelta del jump flood) y dos de pendiente (forma y su suavizado)."""
+        out = []
+        for comps, dt, filt in ((2, "f4", moderngl.NEAREST), (2, "f4", moderngl.NEAREST),
+                                (4, "f2", moderngl.LINEAR), (4, "f2", moderngl.LINEAR)):
+            t = self.ctx.texture(size, comps, dtype=dt)
+            t.filter = (filt, filt)
+            t.repeat_x = t.repeat_y = False
+            out.append((t, self.ctx.framebuffer([t])))
+        return out
+
+    def _form(self, t_fig, t_figd, t_pieces, targets, k, res, rect=None):
+        """Pendiente de la forma de las figuras, suavizada: la normal de volumen de cada miembro.
+        Con `rect` (zona de las figuras en la imagen) todo el trabajo se acota a ella con un margen."""
+        (tf, ff), (tg, fg) = targets[2], targets[3]
+        for _t, f in targets[:2]:
+            f.clear(-1e6, -1e6, 0.0, 1.0)
+        for f in (ff, fg):
+            f.clear(0.0, 0.0, 0.0, 0.0)
+        if rect is not None:
+            w, h = tf.size
+            pad = 40
+            x0, y0 = max(0, int(rect[0] / k) - pad), max(0, int(rect[1] / k) - pad)
+            x1, y1 = min(w, int((rect[0] + rect[2]) / k) + pad), min(h, int((rect[1] + rect[3]) / k) + pad)
+            for _t, f in targets:
+                f.scissor = (x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+        t_seed = self._jfa(t_fig, t_figd, targets[:2], k)
+        pr = self.p_form
+        self._bind(pr, tJfa=t_seed, tFigD=t_figd, tPieces=t_pieces)
+        self._set(pr, "uJfaK", float(k))
+        self._set(pr, "uRes", (float(res[0]), float(res[1])))
+        ff.use()
+        self.v_form.render(moderngl.TRIANGLES, vertices=3)
+        pr = self.p_fblur
+        for src, dst, d in ((tf, fg, (1.0, 0.0)), (tg, ff, (0.0, 1.0))):
+            self._bind(pr, tSrc=src)
+            self._set(pr, "uDir", d)
+            dst.use()
+            self.v_fblur.render(moderngl.TRIANGLES, vertices=3)
+        for _t, f in targets:
+            f.scissor = None
+        return tf
+
+    def _jfa(self, t_fig, t_figd, targets, k):
+        """Campo de distancias al contorno de las figuras (jump flood). Devuelve la textura final."""
+        (ta, fa), (tb, fb) = targets[:2]
+        w, h = ta.size
+        pr = self.p_jinit
+        self._bind(pr, tFig=t_fig, tFigD=t_figd)
+        self._set(pr, "uK", float(k))
+        fa.use()
+        self.v_jinit.render(moderngl.TRIANGLES, vertices=3)
+        step = 1
+        while step * 2 < max(w, h) and step < 64:
+            step *= 2
+        src, dst = (ta, fa), (tb, fb)
+        steps = []
+        while step >= 1:
+            steps.append(step)
+            step //= 2
+        steps.append(1)                                    # pasada extra: corrige los errores del JFA
+        pr = self.p_jstep
+        for st in steps:
+            self._bind(pr, tSeed=src[0])
+            self._set(pr, "uStep", st)
+            dst[1].use()
+            self.v_jstep.render(moderngl.TRIANGLES, vertices=3)
+            src, dst = dst, src
+        return src[0]
 
     # ----- creación -----
     @staticmethod
@@ -1171,9 +1387,12 @@ class GPURenderer:
         S = self._set
         ctx.disable(moderngl.BLEND)
 
-        # 1) escena HDR
+        # 1) escena HDR (con el campo de distancias de las figuras para su volumen)
+        t_form = self._form(self.t_fig, self.t_figd, self.t_pieces, self.jfa, 2, (W, H), p.get("fig_rect")) \
+            if figd is not None else self._dummy
+        ctx.disable(moderngl.BLEND)
         pr = self.p_scene
-        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd, tPieces=self.t_pieces,
+        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd, tPieces=self.t_pieces, tForm=t_form,
                    tPlate=self.t_plate if plate_on else self._dummy, tPlateM=self.t_platem if plate_on else self._dummy,
                    tPlate2=self.t_plate2 if plate_on else self._dummy)
         self._wall_uniforms(pr, p, plate_on)
@@ -1183,6 +1402,7 @@ class GPURenderer:
         S(pr, "uFigLit", 1.0 if figd is not None else 0.0)
         S(pr, "uDimBg", float(p.get("dim_bg", 0.0)))
         S(pr, "uTexI", float(p.get("tex", 1.0)))
+        S(pr, "uDebugN", float(os.environ.get("TATAMIDO_DEBUG_N", "0")))
         for k, n in (("key3", "uKey3"), ("sky", "uSky"), ("bounce", "uBounce")):
             S(pr, n, tuple(float(v) for v in p[k]))
         S(pr, "uCam", tuple(float(v) for v in p["cam"]))
@@ -1311,10 +1531,12 @@ class GPURenderer:
             arr[0, i + 1] = pc[0:4]
             arr[1, i + 1] = pc[4:8]
         self.t_bake_pieces.write(arr.tobytes())
+        jt = self._jfa_targets(size)
+        t_form = self._form(t_fig, t_figd, self.t_bake_pieces, jt, 1, size)
         out = ctx.texture(size, 4)
         fbo = ctx.framebuffer([out])
         pr = self.p_bake
-        self._bind(pr, tFig=t_fig, tFigD=t_figd, tPieces=self.t_bake_pieces)
+        self._bind(pr, tFig=t_fig, tFigD=t_figd, tPieces=self.t_bake_pieces, tForm=t_form)
         S = self._set
         S(pr, "uRes", (float(size[0]), float(size[1])))
         S(pr, "uTexI", float(tex))
@@ -1337,7 +1559,7 @@ class GPURenderer:
         # al formato nativo de pygame: un sprite RGBA se convertiría píxel a píxel en cada blit (20× más lento)
         res = pygame.image.frombytes(fbo.read(components=4), size, "RGBA", True).convert(
             pygame.Surface((1, 1), pygame.SRCALPHA))
-        for o in (fbo, out, t_fig, t_figd):
+        for o in (fbo, out, t_fig, t_figd) + tuple(x for pair in jt for x in pair):
             o.release()
         return res
 
