@@ -1836,14 +1836,25 @@ class PoseDummy:
 _PORTRAITS: Dict[tuple, pygame.Surface] = {}
 
 
-def draw_figure_preview(surf, fd, feet_x, feet_y, height_px, facing=1, t=0.0, rig=None, ss=2, state=None):
-    """Figura de cuerpo entero para menús (selección, VS, resultados)."""
+def draw_figure_preview(surf, fd, feet_x, feet_y, height_px, facing=1, t=0.0, rig=None, ss=2, state=None,
+                        data_surf=None, pieces=None):
+    """Figura de cuerpo entero para menús (selección). Con `data_surf` se dibuja como en el combate: albedo más
+    mapa de altura y piezas, para que la GPU la ilumine por píxel y le pinte los tejidos."""
     rig = rig or LIGHT_RIGS[1]
     d = PoseDummy(fd, facing, t, state)
     pose = fighter_pose(d)
     U = height_px / (190.0 * fd["h"])
-    img, rx, ry = render_figure(d, pose, U, rig, ss=ss)
-    surf.blit(img, (int(feet_x - rx), int(feet_y - ry)))
+    if data_surf is None:
+        img, rx, ry = render_figure(d, pose, U, rig, ss=ss)
+        surf.blit(img, (int(feet_x - rx), int(feet_y - ry)))
+        return
+    mine: list = []
+    img, data, rx, ry = render_figure(d, pose, U, rig, ss=ss, ow_px=2.0 * RS, maps=True,
+                                      id_base=len(pieces) + 1, pieces=mine)
+    ox, oy = int(feet_x - rx), int(feet_y - ry)
+    surf.blit(img, (ox, oy))
+    data_surf.blit(data, (ox, oy))
+    pieces.extend((ax + ox, ay + oy) + tuple(r) for ax, ay, *r in mine)
 
 
 def draw_portrait(surf, fd: dict, rect: pygame.Rect, rig: dict, selected=False, locked=False):

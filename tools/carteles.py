@@ -183,9 +183,11 @@ def c10():
 
 
 def c06():
-    """Selección de luchador (interfaz a 720p nativos: el menú no se escala)."""
+    """Selección de luchador: la interfaz se reescala; los luchadores, a resolución nativa con su luz y tejidos."""
     G.scene, G.mode, G.sel = "select", "versus", [3, 8]
-    G.draw()
+    for _ in range(3):
+        G.frame += 1
+        G.draw()
     save(G.gpu.read(True), "06_seleccion.jpg")
 
 
@@ -275,10 +277,10 @@ if __name__ == "__main__":
             print(pre, fn.__doc__.strip().split(":")[0])
             fn()
     if wants("06"):
-        if RS == 1:
+        if RS == 2:
             print("06", c06.__doc__.strip())
             c06()
-        else:                      # la interfaz se dibuja a 720p: otro proceso sin escala
+        else:                      # la selección se fotografía a 1440p: interfaz reescalada, luchadores nativos
             import subprocess
-            subprocess.run([sys.executable, os.path.abspath(__file__), "--rs", "1", "--only", "06", "--width", "1280",
+            subprocess.run([sys.executable, os.path.abspath(__file__), "--rs", "2", "--only", "06", "--width", "2560",
                             "--out", ARGS.out], check=True)

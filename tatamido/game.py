@@ -685,7 +685,7 @@ class Game:
         p["contrast"] = acc.get("contrast", False)
         p["daltonism"] = acc.get("daltonism", "off")
         ws = None if self.headless else pygame.display.get_window_size()
-        lit = sc == "fight" and self.match is not None
+        lit = (sc == "fight" and self.match is not None) or bool(p.get("menu_lit"))
         self.gpu.render(p, self.bg, self.fig, self.layer, hud, window_size=ws, figd=self.figd if lit else None)
 
     def draw(self):
@@ -765,7 +765,7 @@ class Game:
         cam.x = math.sin(self.frame * 0.002) * 120
         if self.gpu is not None:
             # el dojo va a las capas de la GPU; el texto de la escena se dibuja después sobre el HUD
-            for s in (self.bg, self.fig, self.layer):
+            for s in (self.bg, self.fig, self.layer, self.figd):
                 s.fill((0, 0, 0, 0))
             self._dirty = {"prev": None}            # las capas se han reutilizado: el combate empieza en limpio
             self.title_dojo.draw(self.bg, cam, self.fonts, gpu=True)
@@ -885,16 +885,32 @@ class Game:
             self.text(surf, f"Debilidad: {fd['weak']}", 18, x, yy + 32, (200, 170, 160))
             if self.sel_locked[p]:
                 self.text(surf, "LISTO", 30, x, yy + 62, (255, 240, 200), serif=True)
-        # figuras a cuerpo entero, frente a frente, respirando en su guardia
+        # figuras a cuerpo entero, frente a frente, respirando en su guardia. Con la GPU se dibujan como en el
+        # combate (resolución de render, luz por píxel, tejidos); el menú oscurece el fondo, no a ellos.
         t = self.frame / 60.0
         two = self.mode == "versus"
+        lit = self.gpu is not None and self._bd_params is not None
+        pieces, figs = [], []
         for p in range(2 if two else 1):
             fd = FIGHTERS[self.sel[p]]
             if fd.get("locked") and not self.save.get("okabe"):
                 continue
             x = (535 if p == 0 else 750) if two else 640
-            draw_figure_preview(surf, fd, x, 672, 290 * fd["h"], facing=1 if p == 0 else -1, t=t + p * 1.3,
-                                rig=self.title_dojo.rig, ss=self.cfg.get("ss", 2))
+            if lit:
+                draw_figure_preview(self.fig, fd, x * RS, 672 * RS, 290 * fd["h"] * RS, facing=1 if p == 0 else -1,
+                                    t=t + p * 1.3, rig=self.title_dojo.rig, ss=1.5, data_surf=self.figd, pieces=pieces)
+                figs.append((x * RS, 672 * RS, 0.0, 70 * RS))
+            else:
+                draw_figure_preview(surf, fd, x, 672, 290 * fd["h"], facing=1 if p == 0 else -1, t=t + p * 1.3,
+                                    rig=self.title_dojo.rig, ss=self.cfg.get("ss", 2))
+        if lit and pieces:
+            bp = self._bd_params
+            while len(figs) < 2:
+                figs.append((-9999.0, 672 * RS, 0.0, 1.0))
+            # el oscurecido pasa de después del tonemapping a luz lineal: (1 - d)^2.2 oscurece lo mismo a la vista
+            db = 1.0 - (1.0 - bp.get("dim", 0.0)) ** 2.2
+            # los rayos de los shōji se suman en la composición final: se atenúan igual que el fondo
+            bp.update(pieces=pieces, fighters=figs, menu_lit=True, dim_bg=db, dim=0.0, rays_i=bp.get("rays_i", 0.0) * (1.0 - db))
         if self.mode != "versus":
             self.text(surf, "El rival lo elige el destino" if self.mode in ("versus_ai",) else "Arcade: once rivales" if self.mode == "arcade" else "Torneo: tres combates" if self.mode == "torneo" else "Entrenamiento", 22, W - 480, 360, (200, 190, 175))
         self.text(surf, "WASD / Flechas mover · U o Intro confirmar · Esc atrás", 18, W // 2, H - 32, (170, 160, 150), center=True)

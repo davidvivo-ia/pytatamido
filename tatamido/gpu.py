@@ -75,6 +75,7 @@ uniform vec2 uRes;
 uniform float uTime;
 uniform vec3 uKey3, uSky, uBounce;
 uniform float uFigLit;
+uniform float uDimBg;         // menús: oscurece el fondo pero no a los luchadores
 uniform float uTexI;          // intensidad de las texturas procedurales (0 = lisas)
 uniform vec4 uCam;            // cam.x, zoom, base_y (px), shake_x
 uniform float uDepthScale;    // px por unidad de profundidad
@@ -636,6 +637,7 @@ void main() {
     vec3 fc = toLin(fx.rgb);
     float lf = luma(fc);
     col = mix(col, fc * (1. + 3. * lf * lf), fx.a);
+    col *= 1. - uDimBg * (1. - fg.a);
     frag = vec4(col, coc);
 }
 """
@@ -1138,6 +1140,7 @@ class GPURenderer:
         S(pr, "uRes", (float(W), float(H)))
         S(pr, "uTime", self.t)
         S(pr, "uFigLit", 1.0 if figd is not None else 0.0)
+        S(pr, "uDimBg", float(p.get("dim_bg", 0.0)))
         S(pr, "uTexI", float(p.get("tex", 1.0)))
         for k, n in (("key3", "uKey3"), ("sky", "uSky"), ("bounce", "uBounce")):
             S(pr, n, tuple(float(v) for v in p[k]))
