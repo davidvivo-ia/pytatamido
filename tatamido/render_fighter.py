@@ -19,7 +19,7 @@ from .anatomy import BODIES, LOOKS, SPINE_T
 from .camera import Camera
 from .config import *
 from .fighter import Fighter
-from .poses import fighter_pose
+from .poses import fighter_pose, stance as _stance
 
 LIGHT = (-0.72, -0.69)          # dirección de la luz en pantalla: de los shōji, arriba a la izquierda
 OUTLINE = (16, 11, 9)
@@ -752,6 +752,41 @@ def _expression(f, look):
     return "sonrisa" if e in ("sonrisa", "picara") else "neutra"
 
 
+_LEGS: Dict[str, Tuple[float, float]] = {}
+
+
+def _leg_lengths(fd):
+    """Muslo y pierna (rodilla → apoyo del pie) de cada luchador, medidos en su guardia."""
+    key = fd["id"]
+    if key not in _LEGS:
+        try:
+            p = _stance(fd)
+            d = lambda a, b: math.hypot(b[0] - a[0], b[1] - a[1])
+            _LEGS[key] = ((d(p["hip"], p["kn_l"]) + d(p["hip"], p["kn_r"])) / 2, (d(p["kn_l"], p["ft_l"]) + d(p["kn_r"], p["ft_r"])) / 2)
+        except Exception:
+            _LEGS[key] = (46.0, 48.0)
+    return _LEGS[key]
+
+
+def _leg_ik(H, ft0, T, S, front, up, stretch=1.2):
+    """Pierna de dos huesos fijos hacia el pie que pide la pose. La rodilla dobla siempre hacia delante (o hacia
+    arriba en las patadas), nunca hacia atrás; si el pie no llega, la pierna se estira hasta un 20 % (estirón de
+    animación) y el pie se queda donde alcanza. Con el pie en el suelo y la pierna casi recta, el pie no se mueve."""
+    dx, dy = ft0[0] - H[0], ft0[1] - H[1]
+    D = math.hypot(dx, dy) or 1e-6
+    ux, uy = dx / D, dy / D
+    k = clamp(D / ((T + S) * 0.985), 1.0, stretch)
+    T, S = T * k, S * k
+    D = clamp(D, abs(T - S) + 2.0, (T + S) * 0.995)
+    ft = (H[0] + ux * D, H[1] + uy * D)
+    a = (T * T + D * D - S * S) / (2 * D)
+    h = math.sqrt(max(0.0, T * T - a * a))
+    px, py = -uy, ux
+    score = lambda qx, qy: qx * front[0] + qy * front[1] + 0.5 * (qx * up[0] + qy * up[1])
+    sg = 1.0 if score(px, py) >= score(-px, -py) else -1.0
+    return (H[0] + ux * a + px * h * sg, H[1] + uy * a + py * h * sg), ft
+
+
 def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     fd = f.fd
     lk = LOOKS[fd["id"]]
@@ -845,6 +880,13 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         back = [(0.0, r0 + bag), (uk * 0.55, (r0 + rk) * 0.5 + bag * 1.4), (uk, rk + bag), (1.0, r1)]
         front = [(0.0, r0), (uk * 0.6, (r0 + rk) * 0.5 - 0.3), (uk, rk + 0.4), (1.0, r1)]
         return back, front
+
+    # piernas de huesos fijos: el esqueleto de poses estira muslo y pierna a voluntad (de 31 a 66 cm el muslo,
+    # de 30 a 70 la pierna: 135 cm de pierna en la patada alta); aquí miden lo que en la guardia de cada uno
+    T_, S_ = _leg_lengths(fd)
+    ux_, uy_ = _norm(Cc[0] - H[0], Cc[1] - H[1])
+    for side in ("l", "r"):
+        J["kn_" + side], J["ft_" + side] = _leg_ik(H, J["ft_" + side], T_, S_, (-uy_, ux_), (ux_, uy_))
 
     for side, g, depth in (("l", 1, 0.84), ("r", 3, 1.0)):
         kn, ft = J["kn_" + side], J["ft_" + side]
