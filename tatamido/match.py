@@ -1,4 +1,5 @@
 import math
+import os
 import random
 from typing import List, Optional, Tuple
 
@@ -857,8 +858,14 @@ class Match:
             fr += draw_trail(fig, f, self.cam) or []       # las estelas van detrás de los cuerpos
         cfg = dict(self.cfg, shadows=False)
         pieces: list = []
+        # punto 16: los luchadores se graban como triángulos y los rasteriza la GPU (MSAA) en vez de pygame.
+        # La geometría sigue en Python y cuesta lo mismo en los dos caminos: el de la GPU sólo gana cuando el
+        # rasterizado de pygame crece con la resolución (4K). TATAMIDO_GPU_RASTER=1/0 lo fuerza.
+        env = os.environ.get("TATAMIDO_GPU_RASTER")
+        use_gpu = (env == "1") if env in ("0", "1") else (RS >= 2.5 and not os.environ.get("TATAMIDO_CPU_RASTER"))
+        batch = dict(albedo=[], data=[], pieces=pieces) if use_gpu and figd is not None else None
         for f in order:
-            fr.append(draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd, pieces=pieces))
+            fr.append(draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd, pieces=pieces, batch=batch))
         self.fx.draw_world(fxl, self.cam, fxl)
         self.dojo.draw_rain(fxl)
         extra = {}
@@ -873,6 +880,8 @@ class Match:
         if not self.access.get("shake", True):
             extra["tilt"] = 0.0
         extra["pieces"] = pieces
+        if batch is not None:
+            extra["fig_batch"] = batch
         if fr:
             extra["fig_rect"] = _union(fr)              # la GPU acota a esta zona el campo de distancias
         if dirty is not None:

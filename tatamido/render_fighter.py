@@ -309,6 +309,7 @@ class Figure:
     def __init__(self):
         self.parts: List[tuple] = []
         self.pats: List[int] = []
+        self.joints: dict = {}            # articulaciones finales (tras la cinemática inversa): tests de huesos
         self.mat = "cloth"
         self.pat = "cotton"
         self.groove = False
@@ -352,6 +353,185 @@ class Figure:
         self._add(g, "dot", (c, r), color, False, False, 0.0, False, self.groove)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  GRABADOR: los mismos trazos, en triángulos para la GPU
+# ─────────────────────────────────────────────────────────────────────────────
+def _zipper(pts):
+    """Cremallera entre las dos mitades de un polígono (de su primer vértice al más lejano): triángulos en O(n)
+    para lo que no es estrellado (miembros doblados, mechones curvos: dos lados y dos tapas)."""
+    n = len(pts)
+    x0, y0 = pts[0]
+    i1 = max(range(n), key=lambda i: (pts[i][0] - x0) ** 2 + (pts[i][1] - y0) ** 2)
+    A = pts[:i1 + 1]
+    B = [pts[0]] + pts[:i1 - 1:-1] if i1 > 0 else [pts[0]]
+    a = b = 0
+    la, lb = len(A) - 1, len(B) - 1
+    out = []
+    while a < la or b < lb:
+        pa, pb = A[a], B[b]
+        if b >= lb or (a < la and (A[a + 1][0] - pb[0]) ** 2 + (A[a + 1][1] - pb[1]) ** 2 <=
+                       (B[b + 1][0] - pa[0]) ** 2 + (B[b + 1][1] - pa[1]) ** 2):
+            q = A[a + 1]
+            a += 1
+        else:
+            q = B[b + 1]
+            b += 1
+        out += (pa, pb, q)
+    return out
+
+
+class Recorder:
+    """Hace de superficie para _render/_render_data: en vez de rasterizar, guarda los trazos en coordenadas de
+    pantalla y al final los convierte en triángulos (x, y, r, g, b, a), en el mismo orden, para que la GPU los
+    pinte de una vez. Rellenos: abanico desde el centroide si el polígono es estrellado respecto a él (cabezas,
+    manos, torsos, cápsulas), calculado con numpy para todos a la vez; si no, cremallera. Los rellenos son
+    opacos: si en un doblez muy cerrado dos triángulos se solapan, no se nota."""
+
+    def __init__(self, data=False):
+        self.ops = []
+        self.data = data
+
+    @staticmethod
+    def _c(col):
+        if len(col) > 3:
+            return (col[0] / 255.0, col[1] / 255.0, col[2] / 255.0, col[3] / 255.0)
+        return (col[0] / 255.0, col[1] / 255.0, col[2] / 255.0, 1.0)
+
+    def polygon(self, col, pts, width=0):
+        if not isinstance(pts, list):
+            pts = list(pts)
+        if len(pts) < 3:
+            if len(pts) == 2:
+                self.ops.append((1, pts, self._c(col), max(1, width), False))
+            return
+        if width:
+            self.ops.append((1, pts, self._c(col), width, True))
+        else:
+            self.ops.append((0, pts, self._c(col)))
+
+    def circle(self, col, c, r, width=0):
+        r = float(r)
+        n = int(clamp(r * 0.9 + 8, 10, 48))
+        pts = [(c[0] + math.cos(6.283185307 * i / n) * r, c[1] + math.sin(6.283185307 * i / n) * r) for i in range(n)]
+        if width:
+            self.ops.append((1, pts, self._c(col), width, True))
+        else:
+            self.ops.append((0, pts, self._c(col)))
+
+    def lines(self, col, closed, pts, width=1):
+        pts = list(pts)
+        if len(pts) >= 2:
+            self.ops.append((1, pts, self._c(col), width, closed))
+
+    def triangles(self):
+        """Todos los triángulos como array (n, 6) float32, en orden de pintado, calculados en bloque."""
+        return Recorder.triangles_of([self])[0]
+
+    @staticmethod
+    def triangles_of(recs):
+        """Los triángulos de varios grabadores en una sola pasada de numpy (el color y los datos de una figura):
+        devuelve una lista de arrays, uno por grabador."""
+        import numpy as np
+        ops = [o for r in recs for o in r.ops]
+        bounds_ = np.cumsum([0] + [len(r.ops) for r in recs])
+        if not ops:
+            return [np.zeros((0, 6), dtype="f4") for _ in recs]
+        from itertools import chain
+        kinds = np.fromiter((o[0] for o in ops), dtype=np.int64, count=len(ops))
+        lens = np.fromiter((len(o[1]) for o in ops), dtype=np.int64, count=len(ops))
+        M = int(lens.sum())
+        P = np.fromiter(chain.from_iterable(chain.from_iterable(o[1] for o in ops)), dtype="f8", count=2 * M).reshape(M, 2)
+        off = np.concatenate(([0], np.cumsum(lens)[:-1]))
+        opi = np.repeat(np.arange(len(ops)), lens)
+        last = off + lens - 1
+        prev = np.arange(len(P)) - 1
+        prev[off] = last
+        cols = np.array([o[2] for o in ops], dtype="f4")
+        # rellenos estrellados: abanico desde el centroide (un triángulo por vértice)
+        C = np.add.reduceat(P, off, axis=0) / lens[:, None]
+        Pc, Pp = P - C[opi], P[prev] - C[opi]
+        cr = Pp[:, 0] * Pc[:, 1] - Pp[:, 1] * Pc[:, 0]
+        mx = np.maximum.reduceat(np.abs(cr), off)
+        tol = (mx * 0.02)[opi]                             # las mellas del contorno entintado no cuentan
+        neg = np.maximum.reduceat((cr < -tol).astype(np.int8), off) > 0
+        pos = np.maximum.reduceat((cr > tol).astype(np.int8), off) > 0
+        star = ~(neg & pos)
+        fan_v = (kinds[opi] == 0) & star[opi]
+        fan_xy = np.stack((C[opi], P[prev], P), axis=1)[fan_v].reshape(-1, 2)
+        n_fan = np.bincount(opi[fan_v], minlength=len(ops)) * 3
+        # trazos: dos triángulos por segmento (los abiertos no cierran del último al primero)
+        closed = np.array([bool(o[4]) if o[0] == 1 else False for o in ops])
+        nxt = np.arange(len(P)) + 1
+        nxt[last] = off
+        sv = (kinds[opi] == 1) & (closed[opi] | (np.arange(len(P)) != last[opi]))
+        A, B = P[sv], P[nxt][sv]
+        d = B - A
+        ln = np.hypot(d[:, 0], d[:, 1])
+        good = ln > 1e-6
+        sop = opi[sv][good]
+        A, B, d, ln = A[good], B[good], d[good], ln[good]
+        width = np.array([max(0.5, float(o[3]) * 0.5) if o[0] == 1 else 0.0 for o in ops])
+        nrm = np.stack((-d[:, 1], d[:, 0]), axis=1) / ln[:, None] * width[sop][:, None]
+        a, b, c, e = A + nrm, B + nrm, B - nrm, A - nrm
+        seg_xy = np.stack((a, b, c, a, c, e), axis=1).reshape(-1, 2)
+        n_seg = np.bincount(sop, minlength=len(ops)) * 6
+        # rellenos no estrellados: cremallera (pocos)
+        zip_xy, n_zip = [], np.zeros(len(ops), dtype=np.int64)
+        memo = {}
+        for k in np.nonzero((kinds == 0) & ~star)[0]:
+            pts = ops[k][1]
+            z = memo.get(id(pts))
+            if z is None:
+                z = memo[id(pts)] = _zipper(pts)          # el mismo polígono en el color y en los datos
+            zip_xy.extend(z)
+            n_zip[k] = len(z)
+        zip_xy = np.array(zip_xy, dtype="f8").reshape(-1, 2)
+        # ensamblar en el orden de las operaciones: cada una toma sus triángulos de una sola fuente
+        allxy = np.concatenate((fan_xy, seg_xy, zip_xy))
+        cnt = n_fan + n_seg + n_zip
+        src_start = np.where(n_fan > 0, np.cumsum(n_fan) - n_fan,
+                             np.where(n_seg > 0, len(fan_xy) + np.cumsum(n_seg) - n_seg,
+                                      len(fan_xy) + len(seg_xy) + np.cumsum(n_zip) - n_zip))
+        tot = int(cnt.sum())
+        dst_start = np.cumsum(cnt) - cnt
+        idx = np.arange(tot) - np.repeat(dst_start, cnt) + np.repeat(src_start, cnt)
+        out = np.empty((tot, 6), dtype="f4")
+        out[:, :2] = allxy[idx]
+        out[:, 2:] = np.repeat(cols, cnt, axis=0)
+        ends = np.concatenate((dst_start, [tot]))
+        return [out[ends[bounds_[i]]:ends[bounds_[i + 1]]] for i in range(len(recs))]
+
+    def bounds(self):
+        xs = [q[0] for o in self.ops for q in o[1]]
+        ys = [q[1] for o in self.ops for q in o[1]]
+        if not xs:
+            return None
+        x0, y0 = int(min(xs)) - 4, int(min(ys)) - 4
+        return pygame.Rect(x0, y0, int(max(xs)) + 5 - x0, int(max(ys)) + 5 - y0)
+
+
+class _D:
+    """pygame.draw, o el grabador si la superficie es un Recorder."""
+
+    @staticmethod
+    def polygon(surf, col, pts, width=0):
+        if isinstance(surf, Recorder):
+            return surf.polygon(col, pts, width)
+        return pygame.draw.polygon(surf, col, pts, width)
+
+    @staticmethod
+    def circle(surf, col, c, r, width=0):
+        if isinstance(surf, Recorder):
+            return surf.circle(col, c, r, width)
+        return pygame.draw.circle(surf, col, c, r, width)
+
+    @staticmethod
+    def lines(surf, col, closed, pts, width=1):
+        if isinstance(surf, Recorder):
+            return surf.lines(col, closed, pts, width)
+        return pygame.draw.lines(surf, col, closed, pts, width)
+
+
 def _geom(kind, geo, T, k, fac, cache, key):
     """Geometría en el lienzo de una pieza (cacheada por pasada)."""
     if kind == "ribbon":
@@ -377,7 +557,7 @@ def _outline_part(surf, kind, geo, T, k, ow, ocol, fac, cache, key):
         c, r = geo
         cc = T(c)
         o = ("c", (cc[0] + sh[0], cc[1] + sh[1]), r * k + ow * 0.8)
-        pygame.draw.circle(surf, ocol, (int(o[1][0]), int(o[1][1])), int(o[2]))
+        _D.circle(surf, ocol, (int(o[1][0]), int(o[1][1])), int(o[2]))
         cache[("o", key)] = o
         return
     if kind == "tube":
@@ -390,15 +570,15 @@ def _outline_part(surf, kind, geo, T, k, ow, ocol, fac, cache, key):
         P = _offset_weighted([T(q) for q in geo], ow)
     else:
         return
-    pygame.draw.polygon(surf, ocol, P)
+    _D.polygon(surf, ocol, P)
     cache[("o", key)] = ("p", P)
 
 
 def _draw_cached_outline(surf, o, inv, col):
     if o[0] == "c":
-        pygame.draw.circle(surf, col, (int(o[1][0] * inv), int(o[1][1] * inv)), max(1, int(o[2] * inv)))
+        _D.circle(surf, col, (int(o[1][0] * inv), int(o[1][1] * inv)), max(1, int(o[2] * inv)))
     else:
-        pygame.draw.polygon(surf, col, [(x * inv, y * inv) for x, y in o[1]])
+        _D.polygon(surf, col, o[1] if inv == 1.0 else [(x * inv, y * inv) for x, y in o[1]])
 
 
 def _offset_weighted(pts, ow):
@@ -459,64 +639,64 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
                     d = lx * ux + ly * uy
                     px, py = lx - d * ux, ly - d * uy
                     r = (ra_ + rb_) * 0.5
-                    pygame.draw.polygon(surf, shade(col, 0.68), tube_pts(A, B, ra_, rb_, bu_, bt, sd))
-                    pygame.draw.polygon(surf, col, tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.8, off=(px * r * 0.2, py * r * 0.2)))
+                    _D.polygon(surf, shade(col, 0.68), tube_pts(A, B, ra_, rb_, bu_, bt, sd))
+                    _D.polygon(surf, col, tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.8, off=(px * r * 0.2, py * r * 0.2)))
                     if sheen > 0:
-                        pygame.draw.polygon(surf, shade(col, 1.1 + 0.08 * sheen), tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.28, off=(px * r * 0.5, py * r * 0.5)))
+                        _D.polygon(surf, shade(col, 1.1 + 0.08 * sheen), tube_pts(A, B, ra_, rb_, bu_, bt, sd, k=0.28, off=(px * r * 0.5, py * r * 0.5)))
                 else:
                     Pf = tube_pts(A, B, ra_, rb_, bu_, bt, sd)
-                    pygame.draw.polygon(surf, col, Pf)
+                    _D.polygon(surf, col, Pf)
                     cache[("f", idx)] = Pf
                 if edge:
-                    pygame.draw.polygon(surf, shade(col, 0.55), tube_pts(A, B, ra_, rb_, bu_, bt, sd), edge_w)
+                    _D.polygon(surf, shade(col, 0.55), tube_pts(A, B, ra_, rb_, bu_, bt, sd), edge_w)
             elif kind == "ribbon":
                 frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
                 if shd:
-                    pygame.draw.polygon(surf, shade(col, 0.68), ribbon_pts(frame, kl, kr, k))
-                    pygame.draw.polygon(surf, col, ribbon_pts(frame, kl, kr, k, kk=0.8, shift=0.25))
+                    _D.polygon(surf, shade(col, 0.68), ribbon_pts(frame, kl, kr, k))
+                    _D.polygon(surf, col, ribbon_pts(frame, kl, kr, k, kk=0.8, shift=0.25))
                     if sheen > 0:
-                        pygame.draw.polygon(surf, shade(col, 1.1 + 0.08 * sheen), ribbon_pts(frame, kl, kr, k, kk=0.3, shift=0.55))
+                        _D.polygon(surf, shade(col, 1.1 + 0.08 * sheen), ribbon_pts(frame, kl, kr, k, kk=0.3, shift=0.55))
                 else:
                     Pf = ribbon_pts(frame, kl, kr, k)
-                    pygame.draw.polygon(surf, col, Pf)
+                    _D.polygon(surf, col, Pf)
                     cache[("f", idx)] = Pf
                 if edge:
-                    pygame.draw.polygon(surf, shade(col, 0.55), cache.get(("f", idx)) or ribbon_pts(frame, kl, kr, k), edge_w)
+                    _D.polygon(surf, shade(col, 0.55), cache.get(("f", idx)) or ribbon_pts(frame, kl, kr, k), edge_w)
             elif kind == "poly":
                 P = [T(q) for q in geo]
                 if shd:
                     xs = [q[0] for q in P]
                     ys = [q[1] for q in P]
                     span = min(max(xs) - min(xs), max(ys) - min(ys))
-                    pygame.draw.polygon(surf, shade(col, 0.7), P)
+                    _D.polygon(surf, shade(col, 0.7), P)
                     if span > 6:
                         cx = sum(xs) / len(xs)
                         cy = sum(ys) / len(ys)
                         m = [(cx + (q[0] - cx) * 0.86 + lx * span * 0.08, cy + (q[1] - cy) * 0.9 + ly * span * 0.08) for q in P]
-                        pygame.draw.polygon(surf, col, m)
+                        _D.polygon(surf, col, m)
                         if sheen > 0 and span > 14:
                             h = [(cx + (q[0] - cx) * 0.45 + lx * span * 0.2, cy + (q[1] - cy) * 0.6 + ly * span * 0.2) for q in P]
-                            pygame.draw.polygon(surf, shade(col, 1.08 + 0.06 * sheen), h)
+                            _D.polygon(surf, shade(col, 1.08 + 0.06 * sheen), h)
                     else:
-                        pygame.draw.polygon(surf, col, P)
+                        _D.polygon(surf, col, P)
                 else:
-                    pygame.draw.polygon(surf, col, P)
+                    _D.polygon(surf, col, P)
                 if edge:
-                    pygame.draw.polygon(surf, shade(col, 0.55), P, edge_w)
+                    _D.polygon(surf, shade(col, 0.55), P, edge_w)
             elif kind == "circle":
                 c, r = geo
                 cc = T(c)
                 rr = r * k
                 if shd and rr > 3:
-                    pygame.draw.circle(surf, shade(col, 0.68), (int(cc[0]), int(cc[1])), int(rr))
-                    pygame.draw.circle(surf, col, (int(cc[0] + lx * rr * 0.16), int(cc[1] + ly * rr * 0.16)), int(rr * 0.8))
+                    _D.circle(surf, shade(col, 0.68), (int(cc[0]), int(cc[1])), int(rr))
+                    _D.circle(surf, col, (int(cc[0] + lx * rr * 0.16), int(cc[1] + ly * rr * 0.16)), int(rr * 0.8))
                     if sheen > 0:
-                        pygame.draw.circle(surf, shade(col, 1.1 + 0.08 * sheen),
+                        _D.circle(surf, shade(col, 1.1 + 0.08 * sheen),
                                            (int(cc[0] + lx * rr * 0.45), int(cc[1] + ly * rr * 0.45)), max(1, int(rr * 0.3)))
                 else:
-                    pygame.draw.circle(surf, col, (int(cc[0]), int(cc[1])), max(1, int(rr)))
+                    _D.circle(surf, col, (int(cc[0]), int(cc[1])), max(1, int(rr)))
                 if edge:
-                    pygame.draw.circle(surf, shade(col, 0.55), (int(cc[0]), int(cc[1])), max(1, int(rr)), edge_w)
+                    _D.circle(surf, shade(col, 0.55), (int(cc[0]), int(cc[1])), max(1, int(rr)), edge_w)
             elif kind == "line":
                 pts, w, closed, taper = geo
                 P = [T(q) for q in pts]
@@ -525,14 +705,14 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
                     if wpx >= 2.0 and (taper or (not closed and wpx >= 3)):     # bajo 2 px el afilado no se ve
                         bp = brush_pts(P, wpx, taper=taper)
                         if len(bp) >= 3:
-                            pygame.draw.polygon(surf, col, bp)
+                            _D.polygon(surf, col, bp)
                             cache[("f", idx)] = bp
                     else:
-                        pygame.draw.lines(surf, col, closed, P, max(1, int(wpx)))
+                        _D.lines(surf, col, closed, P, max(1, int(wpx)))
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
-                pygame.draw.circle(surf, col, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
+                _D.circle(surf, col, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
 
 
 GROUP_H = {0: 46, 1: 66, 2: 106, 3: 126, 4: 150, 5: 176, 6: 210}
@@ -644,30 +824,30 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
 
             def split_draw(pts, h):
                 """Cinta: el polígono entero con la pieza de arriba y la mitad baja con la de abajo."""
-                pygame.draw.polygon(surf, (h, pid, spec), pts)
+                _D.polygon(surf, (h, pid, spec), pts)
                 if pid2 is not None:
                     id2, m_, n_ = pid2
                     low = pts[m_:2 * n_ + 4 - m_]
                     if len(low) >= 3:
-                        pygame.draw.polygon(surf, (h, id2, spec), low)
+                        _D.polygon(surf, (h, id2, spec), low)
 
             if kind == "ribbon":
                 frame, (kl, kr) = _geom(kind, geo, T, k, fac, cache, idx)
-                split_draw([(x * inv, y * inv) for x, y in pf] if pf is not None else ribbon_pts(frame, kl, kr, k), h0)
+                split_draw((pf if inv == 1.0 else [(x * inv, y * inv) for x, y in pf]) if pf is not None else ribbon_pts(frame, kl, kr, k), h0)
             elif kind == "tube":
                 a, b, ra, rb, bu, bt, side = geo
                 A, B = T(a), T(b)
                 if pf is not None:
-                    pygame.draw.polygon(surf, base, [(x * inv, y * inv) for x, y in pf])     # misma silueta que el albedo
+                    _D.polygon(surf, base, pf if inv == 1.0 else [(x * inv, y * inv) for x, y in pf])     # misma silueta
                 else:
-                    pygame.draw.polygon(surf, base, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac))
+                    _D.polygon(surf, base, tube_pts(A, B, ra * k, rb * k, bu * k, bt, side * fac))
             elif kind == "poly":
                 P = [T(q) for q in geo]
-                pygame.draw.polygon(surf, base, P)
+                _D.polygon(surf, base, P)
             elif kind == "circle":
                 c, r = geo
                 cc = T(c)
-                pygame.draw.circle(surf, base, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
+                _D.circle(surf, base, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
             elif kind == "line":
                 pts, w, closed, taper = geo
                 P = [T(q) for q in pts]
@@ -677,18 +857,18 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                     val = (max(0, h0 - gd), pid, spec) if groove else (h0 + 4, pid, spec)
                     wpx = max(1.0, w * k * ((2.2 if mat == "skin" else 2.8) if groove else 1.0))
                     if pf is not None and not groove:
-                        bp = [(x * inv, y * inv) for x, y in pf]
+                        bp = pf if inv == 1.0 else [(x * inv, y * inv) for x, y in pf]
                     else:
                         bp = brush_pts(P, wpx, taper=taper) if not closed and wpx >= 2.0 else []
                     if len(bp) >= 3:
-                        pygame.draw.polygon(surf, val, bp)
+                        _D.polygon(surf, val, bp)
                     else:
-                        pygame.draw.lines(surf, val, closed, P, max(1, int(wpx)))
+                        _D.lines(surf, val, closed, P, max(1, int(wpx)))
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
                 val = (max(0, h0 - 10), pid, spec) if groove else (h0 + 4, pid, spec)
-                pygame.draw.circle(surf, val, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
+                _D.circle(surf, val, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
     return pieces
 
 
@@ -1130,6 +1310,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             th = 0.0
         foot_frames[side] = (fv, th, grounded)
 
+    fig.joints.update(hip=H, chest=Cc, head=Hd, kn_l=J["kn_l"], ft_l=J["ft_l"], kn_r=J["kn_r"], ft_r=J["ft_r"])
     for side, g, depth in (("l", 1, 0.84), ("r", 3, 1.0)):
         kn, ft = J["kn_" + side], J["ft_" + side]
         sx, sy = _norm(ft[0] - kn[0], ft[1] - kn[1])
@@ -1752,6 +1933,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         hit_arm = strike is not None and strike[0] == side
         sh, el, hd = arm_ik(J["sh_" + side], J["el_" + side], J["hd_" + side],
                             *((1.2 + 0.05 * strike[1], 3.0 + 4.0 * strike[1]) if hit_arm else ()))
+        fig.joints.update({"sh_" + side: sh, "el_" + side: el, "hd_" + side: hd})
         # smear: con el puño rápido, la silueta se estira entre donde estaba y donde está (1-2 fotogramas)
         was, speed = sec.motion("hd_" + side, hd)
         if speed > 9.0 and f.state in (Fighter.ATTACK, Fighter.KIAI):
@@ -1996,7 +2178,33 @@ def render_figure(f, pose, U, rig, ss=2, outline=OUTLINE, ow_px=2.0, flat=None, 
     return canvas, rx, ry
 
 
-def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=False, lut_bw=False, data_surf=None, pieces=None):
+def record_figure(f, pose, x0, y0, K, rig, ocol, ow, batch, ss=1.6):
+    """La figura como triángulos en pantalla (raíz en x0, y0; K px por cm de pose) para que la GPU la rasterice:
+    batch["albedo"] y batch["data"] reciben los mismos trazos que _render y _render_data, batch["pieces"] las
+    piezas con su ancla en pantalla. Devuelve el rectángulo que ocupa."""
+    fig = build_figure(f, pose, rig, raw=True)
+    fac = f.facing
+    Ks = K * f.scale
+    if fac == 1:
+        def T(p):
+            return (x0 + p[0] * Ks, y0 + p[1] * Ks)
+    else:
+        def T(p):
+            return (x0 - p[0] * Ks, y0 + p[1] * Ks)
+    ra, rd = Recorder(), Recorder(data=True)
+    shared: dict = {}
+    _render(fig, ra, T, Ks, ow, ocol, ss=ss, fac=fac, baked=False, cache=shared)
+    pieces = batch["pieces"]
+    # la lista de piezas es la del fotograma (ya trae las del otro luchador): el número es su posición + 1
+    _render_data(fig, rd, T, Ks, ow, fac=fac, shared=shared, inv=1.0, id_base=1, pieces=pieces)
+    ta, td = Recorder.triangles_of([ra, rd])
+    batch["albedo"].append(ta)
+    batch["data"].append(td)
+    return ra.bounds()
+
+
+def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=False, lut_bw=False, data_surf=None, pieces=None,
+                 batch=None):
     """Luchador en pantalla: sombra (renderer CPU), figura supermuestreada y cajas de depuración."""
     pose = fighter_pose(f)
     if f.squash > 0.02 and f.y >= 0:
@@ -2019,6 +2227,27 @@ def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=Fals
     # supermuestreo adaptativo: con el luchador grande en pantalla basta con menos muestras
     ss = max(1.0, min(cfg.get("ss", 2), cfg.get("ss_px", 2.7) / max(0.1, cam.S(1))))
     x0, y0 = cam.P(f.x, f.y)
+    if batch is not None:
+        # la GPU rasteriza la figura (punto 16): aquí sólo se construyen sus triángulos
+        batch["pieces"] = pieces if pieces is not None else batch.get("pieces", [])
+        drawn = record_figure(f, pose, x0, y0, cam.S(1), rig, ocol, ow, batch) or pygame.Rect(int(x0), int(y0), 1, 1)
+        if f.trail and getattr(f, "_trail_seen", None) is not f.trail[-1]:
+            f._trail_seen = f.trail[-1]
+            img, rx, ry = render_figure(f, pose, cam.S(1), rig, ss=1.0, outline=ocol, ow_px=ow)
+            sil = pygame.mask.from_surface(img, 100).to_surface(setcolor=(*f.player_color, 150), unsetcolor=(0, 0, 0, 0))
+            imgs = getattr(f, "_trail_imgs", [])
+            imgs.append((sil, f.x, f.y, rx, ry, f.anim_t))
+            f._trail_imgs = imgs[-5:]
+        if debug:
+            hb = f.hurtbox()
+            p1, p2 = cam.P(hb.left, hb.top), cam.P(hb.right, hb.bottom)
+            pygame.draw.rect(surf, (80, 200, 255), (p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]), 1)
+            at = f.hitbox()
+            if at:
+                p1, p2 = cam.P(at.left, at.top), cam.P(at.right, at.bottom)
+                pygame.draw.rect(surf, (255, 60, 60), (p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]), 2)
+            return drawn.inflate(int(cam.S(40)), int(cam.S(40)))
+        return drawn
     if data_surf is not None:
         mine: list = []
         base = len(pieces) + 1 if pieces is not None else 1

@@ -72,6 +72,20 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
 
 ![Tejidos de cerca: judogi, damasco de seda, satén thai, lycra, cuero y neopreno](docs/09_tejidos.jpg)
 
+- **Volumen real (GPU):** un *jump flood* sobre el mapa de piezas da a cada píxel la distancia y la
+  dirección al borde de su miembro; con la anchura local (la cresta se busca hacia dentro) la GPU le pone
+  la normal de un cilindro: brazos, piernas, torso y cabeza se redondean de verdad, con medio tono hacia
+  el terminador. Un contorno de una capa de encima (el brazo sobre el pecho) no curva lo de debajo.
+- **Autosombra:** una marcha de 16 pasos por el campo de alturas (capa de profundidad + perfil) hacia la
+  luz: el brazo sombrea el pecho, una pierna la otra, la penumbra crece con la distancia.
+- **Anatomía en movimiento:** cuello de longitud fija en todas las poses; trapecio y canesú que bajan del
+  cuello al deltoides; manos con dedos separados, nudillos y garra al hacer presa; parpadeo, mirada al
+  rival y mejilla aplastada en el impacto; pies planos en el suelo que levantan el talón cuando el tobillo
+  ya no dobla, en punta en el aire; el puño dibujado llega al rival con una zancada en los fotogramas
+  activos (la jugabilidad no cambia); los golpes respetan la guardia de cada uno.
+- **Animación secundaria:** mangas y perneras siguen al cuerpo con unos dos fotogramas de retraso y los
+  golpes rápidos estiran la silueta entre un fotograma y el siguiente (*smear*).
+- **Bajo la lluvia** la tela empapada oscurece, el pelo se apelmaza y caen gotas que resbalan.
 - **Iluminación por píxel de los sprites (renderer GPU):** cada luchador se dibuja dos veces, en color
   plano y en un mapa de altura y material. La GPU deriva normales de ese relieve y los ilumina con la luz
   real de cada asalto: piel con dispersión subsuperficial (borde de sombra cálido) y brillo del sudor,
@@ -125,6 +139,15 @@ renderer de pygame. pygame dibuja las capas (fondo, luchadores, efectos, HUD) y 
 - **Reflejos** de luchadores y pared en el suelo; en el desempate, suelo mojado con ondas de lluvia.
 - **Luchadores iluminados por píxel** a partir de su mapa de altura y material (ver *Los luchadores*).
 - **Estelas** de los golpes fuertes con la silueta real del luchador en el color del jugador.
+- **Pared viva:** la sombra del pino se mece con el viento sobre el papel de los shōji y el papel de los
+  farolillos parpadea con la llama; la pared del asalto siguiente se hornea y se sube a la GPU durante el
+  final de asalto, sin parón al cambiar de luz.
+- **Rasterizado de las figuras en la GPU:** los trazos de cada luchador se graban como triángulos
+  (abanico si el polígono es estrellado, cremallera si no; todo en bloque con numpy) y la GPU los pinta
+  con MSAA, el color sobre las estelas y el mapa de datos sin suavizar. La imagen es la misma que la de
+  pygame (test incluido). Medido en el contenedor de desarrollo, la CPU sigue limitada por la geometría en
+  Python: el camino de la GPU sólo gana a 4K (28 frente a 32 ms) y se activa solo a partir de ahí
+  (`TATAMIDO_GPU_RASTER=1/0` lo fuerza). Pasar también la geometría a la GPU es el siguiente salto.
 - **HDR:** bloom de doble filtro, tonemapping AgX, gradación por asalto, aberración cromática,
   ondas de choque en los golpes fuertes, foco cenital y frame de impacto en el Kiai, viñeta,
   grano de película, profundidad de campo por CoC (Kiai, Modo Foto, menús), LUTs y FXAA.
@@ -147,7 +170,9 @@ python Tatamydo.py --renderer gpu    # auto (por defecto) | gpu | cpu
 | `dojo.py` · `fx.py` · `postfx.py` | Kōyō-kan, polvo, lluvia, tinta sumi-e; posprocesado del renderer CPU |
 | `match.py` · `replay.py` | Triángulo, puntuación, fase de suelo, repetición de ippon, grabación determinista |
 | `game.py` | Escenas, menús, modos, Modo Foto, opciones y accesibilidad |
-| `tests/` | `pytest`: determinismo, triángulo, técnicas únicas, contra, escapes, guardia rota, entrenamiento, repeticiones y todas las escenas con ambos renderers |
+| `ui.py` | Interfaz en coordenadas lógicas pintada a la resolución de render (textos y retratos nítidos) |
+| `tests/` | `pytest`: determinismo, triángulo, técnicas únicas, contra, escapes, guardia rota, entrenamiento, repeticiones, todas las escenas con ambos renderers, interfaz, público horneado, rasterizado GPU frente a pygame y tests visuales (huesos y 72 imágenes de referencia) |
+| `tools/` | `carteles.py` (imágenes de docs/), `hoja.py` (hoja de poses y referencias de los tests), `bench.py` (tiempos por etapa) |
 
 ## Ejecutar
 
@@ -159,13 +184,21 @@ python Tatamydo.py --preset cine     # portatil | bajo | medio | alto | ultra | 
 python Tatamydo.py --photo-mode      # arranca directo en el Modo Foto
 python Tatamydo.py --ai-vs-ai        # espectador
 python Tatamydo.py --debug-hitboxes
-python -m pytest -q                  # tests de simulación
+python -m pytest -q                  # tests de simulación, render y visuales
 python tools/carteles.py             # regenera las imágenes de docs/ en 4K (--rs 1 --only 01 para un vistazo)
+python tools/hoja.py --fighters haruki,kanoa --poses guardia,jab,agarre   # hoja de poses con la luz de la GPU
+python tools/hoja.py --refs          # regenera tests/ref tras un cambio intencionado en las figuras
+python tools/bench.py --res 1440p    # tiempo de CPU y de cada etapa de la GPU en tu máquina
 ```
+
+`TATAMIDO_DEBUG_N=1` pinta las normales de los luchadores, `=2` la autosombra y `=3` las alturas.
 
 Por dentro, `--res` fija `TATAMIDO_RS` (1,5 = 1080p, 2 = 1440p, 3 = 4K): cámara, dojo, tinta y shaders
 escalan sus medidas en píxeles, y los tejidos ganan una segunda octava (el hilo, los poros, las hebras)
-que sólo aparece cuando hay píxeles para verla. El renderer CPU funciona a 720p.
+que sólo aparece cuando hay píxeles para verla.
+
+El renderer CPU es el modo de compatibilidad para equipos sin OpenGL 3.3: funciona a 720p, sin luz por
+píxel ni tejidos, y no recibe funciones nuevas; los tests siguen cubriéndolo para que no se rompa.
 
 ## Controles
 

@@ -123,6 +123,31 @@ def sheet(G, fighters, poses, rnd=1, cols=None, studio=False):
     return out
 
 
+REF_POSES = ("guardia", "jab", "patada", "agarre", "impacto", "agachado")
+REF_DIR = os.path.join(ROOT, "tests", "ref")
+
+
+def ref_image(fid, pose_name):
+    """Figura de referencia para los tests visuales: rasterizado de pygame (determinista), sin GPU."""
+    from tatamido.config import LIGHT_RIGS
+    from tatamido.data import FIGHTER_BY_ID
+    from tatamido.render_fighter import render_figure
+    d, pose = pose_for(FIGHTER_BY_ID[fid], pose_name)
+    img, _rx, _ry = render_figure(d, pose, 1.1, LIGHT_RIGS[1], ss=2)
+    return img
+
+
+def write_refs():
+    """Regenera tests/ref: hay que hacerlo (y revisar las imágenes) cuando un cambio en las figuras es intencionado."""
+    import pygame
+    from tatamido.data import FIGHTERS
+    os.makedirs(REF_DIR, exist_ok=True)
+    for fd in FIGHTERS:
+        for pn in REF_POSES:
+            pygame.image.save(ref_image(fd["id"], pn), os.path.join(REF_DIR, f"{fd['id']}_{pn}.png"))
+    print("referencias en", REF_DIR)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rs", type=float, default=2.0)
@@ -131,13 +156,20 @@ def main():
     ap.add_argument("--round", type=int, default=1)
     ap.add_argument("--studio", action="store_true", help="fondo neutro en vez del dojo")
     ap.add_argument("--out", default="hoja.png")
+    ap.add_argument("--refs", action="store_true", help="regenera las imágenes de referencia de tests/ref")
     a = ap.parse_args()
+    if a.refs:
+        a.rs = 1.0
     os.environ["TATAMIDO_RS"] = str(a.rs)
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     warnings.simplefilter("ignore")
     sys.path.insert(0, ROOT)
     import pygame
+    if a.refs:
+        pygame.init()
+        write_refs()
+        return
     from tatamido.game import Game
     G = Game(dict(preset="ultra", headless=True, windowed=True, renderer="gpu"))
     img = sheet(G, a.fighters.split(","), a.poses.split(","), a.round, studio=a.studio)

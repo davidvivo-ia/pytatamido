@@ -759,6 +759,36 @@ void main() {
 }
 """
 
+# ── rasterizado de las figuras (punto 16) ─────────────────────────────────────
+# Los triángulos llegan en píxeles de la imagen (y hacia abajo) en el orden de pintado; la fila 0 de la
+# textura es la parte de arriba de la imagen, como en las capas que sube pygame.
+FIG_VERT = """
+#version 330
+in vec2 in_pos;
+in vec4 in_col;
+uniform vec2 uRes;
+out vec4 v_col;
+void main() { v_col = in_col; gl_Position = vec4(in_pos / uRes * 2.0 - 1.0, 0.0, 1.0); }
+"""
+FIG_FRAG = """
+#version 330
+in vec4 v_col;
+out vec4 frag;
+uniform float uSwz;          // la capa destino se lee con swizzle BGRA (el orden de bytes de pygame)
+void main() { frag = uSwz > 0.5 ? v_col.bgra : v_col; }
+"""
+# composición: la figura resuelta del MSAA (premultiplicada por la cobertura) sobre las estelas de pygame
+FIG_OVER = COMMON + """
+uniform sampler2D tSrc;
+uniform float uSwz;
+void main() {
+    vec4 c = texelFetch(tSrc, ivec2(gl_FragCoord.xy), 0);
+    if (c.a < 1e-4) discard;
+    vec3 rgb = c.rgb / c.a;
+    frag = vec4(uSwz > 0.5 ? rgb.bgr : rgb, c.a);
+}
+"""
+
 # ── distancia al contorno (jump flood) ─────────────────────────────────────────
 # Semillas: píxeles de tinta o vacíos (fuera de la figura). Cada texel acaba guardando la semilla más
 # cercana; con ella el shader sabe a qué distancia y en qué dirección está el borde de su miembro y le
@@ -1155,6 +1185,9 @@ class GPURenderer:
         self.p_jstep, self.v_jstep = prog(JFA_STEP)
         self.p_form, self.v_form = prog(FORM)
         self.p_fblur, self.v_fblur = prog(FORM_BLUR)
+        self.p_fover, self.v_fover = prog(FIG_OVER)
+        self.p_fig = ctx.program(vertex_shader=FIG_VERT, fragment_shader=FIG_FRAG)
+        self._figr = None                  # objetivos del rasterizado de figuras (se crean al primer uso)
 
         def tex(size, comps=4, dtype="f1", mip=False):
             t = ctx.texture(size, comps, dtype=dtype)
@@ -1195,6 +1228,74 @@ class GPURenderer:
         self.f_out = ctx.framebuffer([self.t_out])
         self._swz = None
         self.jfa = self._jfa_targets((max(1, W // 2), max(1, H // 2)))
+
+    def _fig_targets(self):
+        """MSAA para el color de las figuras, su resolución y framebuffers sobre las capas de figura y datos."""
+        if self._figr is None:
+            ctx = self.ctx
+            samples = 0
+            for n in (8, 4, 2):
+                if n <= getattr(ctx, "max_samples", 0):
+                    samples = n
+                    break
+            rb = ctx.renderbuffer((W, H), 4, samples=samples) if samples else None
+            res = self._tex((W, H))
+            self._figr = dict(samples=samples, msaa=ctx.framebuffer([rb]) if rb else None, rb=rb, res=res,
+                              res_fb=ctx.framebuffer([res]), fig_fb=ctx.framebuffer([self.t_fig]),
+                              figd_fb=ctx.framebuffer([self.t_figd]))
+        return self._figr
+
+    def _raster_figures(self, batch, rect):
+        """Pinta en la GPU los luchadores grabados: el color con MSAA, compuesto sobre las estelas que ya trae
+        la capa de figura; el mapa de datos sin suavizado (los números de pieza no se pueden mezclar)."""
+        ctx = self.ctx
+        R = self._fig_targets()
+        pr = self.p_fig
+        self._set(pr, "uRes", (float(W), float(H)))
+        sc = None
+        if rect is not None:
+            x, y, w, h = rect
+            x0, y0 = max(0, int(x) - 2), max(0, int(y) - 2)
+            sc = (x0, y0, max(1, min(W, int(x + w) + 2) - x0), max(1, min(H, int(y + h) + 2) - y0))
+
+        def draw(blocks, fb, swz):
+            blocks = [b for b in blocks if len(b)]
+            if not blocks:
+                return
+            self._set(pr, "uSwz", 1.0 if swz else 0.0)
+            buf = ctx.buffer(np.concatenate(blocks).astype("f4").tobytes())
+            va = ctx.vertex_array(pr, [(buf, "2f 4f", "in_pos", "in_col")])
+            fb.use()
+            va.render(moderngl.TRIANGLES)
+            va.release()
+            buf.release()
+
+        ctx.disable(moderngl.BLEND)
+        # datos: directos sobre la capa (vacía) de datos
+        R["figd_fb"].scissor = None
+        R["figd_fb"].clear(0.0, 0.0, 0.0, 0.0)
+        draw(batch["data"], R["figd_fb"], self.t_figd.swizzle == "BGRA")
+        # color: MSAA → resolución → encima de la capa de figura con alfa recto
+        tgt = R["msaa"] or R["res_fb"]
+        tgt.scissor = sc
+        tgt.clear(0.0, 0.0, 0.0, 0.0)
+        draw(batch["albedo"], tgt, False)
+        tgt.scissor = None
+        if R["msaa"] is not None:
+            ctx.copy_framebuffer(R["res_fb"], R["msaa"])
+        ctx.enable(moderngl.BLEND)
+        ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA, moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+        pr2 = self.p_fover
+        self._bind(pr2, tSrc=R["res"])
+        self._set(pr2, "uSwz", 1.0 if self.t_fig.swizzle == "BGRA" else 0.0)
+        R["fig_fb"].scissor = sc
+        R["fig_fb"].use()
+        self.v_fover.render(moderngl.TRIANGLES, vertices=3)
+        R["fig_fb"].scissor = None
+        ctx.blend_func = moderngl.DEFAULT_BLENDING
+        ctx.disable(moderngl.BLEND)
+        self.t_fig.build_mipmaps()
+        self.t_figd.build_mipmaps()
 
     def _jfa_targets(self, size):
         """Dos campos de semillas (ida y vuelta del jump flood) y dos de pendiente (forma y su suavizado)."""
@@ -1385,8 +1486,24 @@ class GPURenderer:
             S(pr, "uPineSway", float(p.get("pine_sway", 0.0)))
 
     # ----- fotograma -----
+    profile = False                     # tools/bench.py: tiempo de cada etapa (sincroniza la GPU entre etapas)
+
+    def _mark(self, name):
+        if not self.profile:
+            return
+        import time
+        self.ctx.finish()
+        now = time.perf_counter()
+        if name is not None and getattr(self, "_t_prev", None) is not None:
+            self.timings[name] = self.timings.get(name, 0.0) + (now - self._t_prev) * 1e3
+        self._t_prev = now
+
     def render(self, p: dict, bg, fig, fx, hud, dt=1 / 60, window_size=None, figd=None):
         ctx = self.ctx
+        if self.profile:
+            self.timings = getattr(self, "timings", {})
+            self._t_prev = None
+            self._mark(None)
         self.t += dt
         dirty = p.get("dirty", "full")
         if dirty == "full" or dirty is None:
@@ -1405,11 +1522,17 @@ class GPURenderer:
         plate_on = cur is not None
         self.t_plate, self.t_platem = (cur["col"], cur["mat"]) if cur else (None, None)
         self.t_plate2 = old["col"] if old else self.t_plate
-        if figd is not None:
+        self._mark("subidas: fondo y figuras")
+        batch = p.get("fig_batch")
+        if batch is not None:
+            self._raster_figures(batch, p.get("fig_rect"))
+            self._mark("rasterizado de figuras")
+        if figd is not None and batch is None:
             if dirty == "full" or dirty is None:
                 self._upload(self.t_figd, figd, mip=True)
             elif dirty.get("fig") is not None:
                 self._upload(self.t_figd, figd, mip=True, rect=dirty["fig"])
+        if figd is not None:
             pcs = p.get("pieces") or []
             arr = self._pieces
             arr[:] = 0.0
@@ -1419,6 +1542,7 @@ class GPURenderer:
             self.t_pieces.write(arr.tobytes())
         self._upload(self.t_fx, fx)
         self._upload_hud(hud)
+        self._mark("subidas: datos, efectos e interfaz")
         S = self._set
         ctx.disable(moderngl.BLEND)
 
@@ -1459,6 +1583,7 @@ class GPURenderer:
         self.v_scene.render(moderngl.TRIANGLES, vertices=3)
         src = self.t_scene
 
+        self._mark("forma (JFA) y escena")
         # 2) profundidad de campo
         if p.get("dof", 0) > 0.3:
             pr = self.p_dof
@@ -1469,6 +1594,7 @@ class GPURenderer:
             self.v_dof.render(moderngl.TRIANGLES, vertices=3)
             src = self.t_dof
 
+        self._mark("profundidad de campo")
         # 3) rayos volumétricos (media resolución)
         pr = self.p_rays
         self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tPlate=self.t_plate if plate_on else self._dummy)
@@ -1485,6 +1611,7 @@ class GPURenderer:
         else:
             self.f_rays.clear(0, 0, 0, 1)
 
+        self._mark("rayos")
         # 4) bloom: bajada con Karis y subida en tienda
         pr = self.p_down
         prev, pw, ph = src, W, H
@@ -1506,6 +1633,7 @@ class GPURenderer:
             self.v_up.render(moderngl.TRIANGLES, vertices=3)
         ctx.disable(moderngl.BLEND)
 
+        self._mark("bloom")
         # 5) composición final, tonemapping y gradación
         pr = self.p_final
         self._bind(pr, tScene=src, tBloom=self.bloom[0][0], tRays=self.t_rays)
@@ -1525,6 +1653,7 @@ class GPURenderer:
         self.f_ldr.use()
         self.v_final.render(moderngl.TRIANGLES, vertices=3)
 
+        self._mark("composición final")
         # 6) FXAA + HUD
         pr = self.p_present
         self._bind(pr, tLdr=self.t_ldr, tHud=self.t_hud)
@@ -1543,6 +1672,7 @@ class GPURenderer:
             scr.clear(0, 0, 0, 1)
             scr.viewport = ((ww - vw) // 2, (wh - vh) // 2, vw, vh)
             self.v_present.render(moderngl.TRIANGLES, vertices=3)
+        self._mark("FXAA e interfaz")
 
     def bake_figure(self, img: pygame.Surface, data: pygame.Surface, pieces, light: dict, feet, tex=1.0,
                     lantern=None, haze=None) -> pygame.Surface:
