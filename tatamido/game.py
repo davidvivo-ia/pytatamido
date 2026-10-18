@@ -46,6 +46,7 @@ class Game:
         pygame.display.set_caption(TITLE + ("  ·  GPU" if self.gpu else "  ·  CPU"))
         self.bg = pygame.Surface((W, H), pygame.SRCALPHA)
         self.fig = pygame.Surface((W, H), pygame.SRCALPHA)
+        self.figd = pygame.Surface((W, H), pygame.SRCALPHA)   # altura y material de los luchadores (GPU)
         self.hud = pygame.Surface((W, H), pygame.SRCALPHA)
         self._bd_params = None
         self.audio = Audio(self.save.get("volume", 0.8))
@@ -608,7 +609,7 @@ class Game:
                 if keys[pygame.K_DOWN]: ph["yoff"] -= 4
                 m.cam.x, m.cam.zoom = ph["x"], ph["zoom"]
                 m.cam.yoff = ph["yoff"]
-                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, photo=ph)
+                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, photo=ph, figd=self.figd)
                 p.update(lut=ph["lut"], exposure=p["exposure"] + ph["exposure"] * 0.35, dof=9.0 if ph["dof"] else 0.0,
                          grain=0.045 if ph["grain"] else 0.0, tilt=0.0)
                 if not ph["vignette"]:
@@ -619,7 +620,7 @@ class Game:
                 m.cam.override = None
                 m.cam.yoff = 0
             else:
-                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts)
+                p = m.draw_layers(self.bg, self.fig, self.layer, self.fonts, figd=self.figd)
                 m.draw_hud(hud, self.fonts)
                 m.fx.draw_screen(hud, self.fonts, reduce_flash=acc.get("flashes", False))
                 if m.state == Match.REPLAY:
@@ -644,7 +645,8 @@ class Game:
         p["contrast"] = acc.get("contrast", False)
         p["daltonism"] = acc.get("daltonism", "off")
         ws = None if self.headless else pygame.display.get_window_size()
-        self.gpu.render(p, self.bg, self.fig, self.layer, hud, window_size=ws)
+        lit = sc == "fight" and self.match is not None
+        self.gpu.render(p, self.bg, self.fig, self.layer, hud, window_size=ws, figd=self.figd if lit else None)
 
     def draw(self):
         if self.gpu is not None:

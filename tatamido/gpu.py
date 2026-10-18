@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     moderngl = None
     np = None
 
-from .config import FLOOR_Y, H, W
+from .config import FLOOR_Y, H, W, mixc
 
 LUT_IDS = {"Natural": 0, "Caravaggio": 1, "Hammershøi": 2, "Kurosawa B/N": 3, "Daido Moriyama": 4}
 DALT_IDS = {"off": 0, "protanopia": 1, "deuteranopia": 2, "tritanopia": 3}
@@ -64,9 +64,11 @@ float luma(vec3 c) { return dot(c, vec3(.2126, .7152, .0722)); }
 """
 
 SCENE = COMMON + """
-uniform sampler2D tBg, tFig, tFx;
+uniform sampler2D tBg, tFig, tFx, tFigD;
 uniform vec2 uRes;
 uniform float uTime;
+uniform vec3 uKey3, uSky, uBounce;
+uniform float uFigLit;
 uniform vec4 uCam;            // cam.x, zoom, base_y (px), shake_x
 uniform float uDepthScale;    // px por unidad de profundidad
 uniform float uFloorBackY;
@@ -237,6 +239,69 @@ vec3 shadeFloor(vec2 p, out float coc) {
     return col;
 }
 
+// ── luz por píxel de los luchadores ──────────────────────────────────────────
+// tFigD: R altura (grupos de profundidad + cúpula por pieza), G material, B brillo.
+// 0 tinta · 1 piel · 2 algodón · 3 satén/lycra · 4 cuero · 5 pelo · 6 ojos
+float figH(vec2 q) { return Lp(tFigD, q, 1.0).r * 0.5 + Lp(tFigD, q, 2.3).r * 0.5; }
+
+vec3 litFighter(vec2 p, vec4 fg) {
+    vec3 alb = toLin(fg.rgb);
+    vec4 fd = Lp(tFigD, p);
+    int mat = int(fd.g * 255. / 36. + 0.5);
+    if (mat == 0) return alb * uTint;                       // tinta: el contorno no se ilumina
+    float e = 2.0;
+    float hx = figH(p + vec2(e, 0.)) - figH(p - vec2(e, 0.));
+    float hy = figH(p + vec2(0., e)) - figH(p - vec2(0., e));
+    float bump = mat == 5 ? 5.0 : 7.0;
+    vec3 N = normalize(vec3(-hx * bump, hy * bump, 1.0));
+    float ao = 1. - clamp((Lp(tFigD, p, 4.2).r - fd.r) * 2.2, 0., 0.5);
+    vec3 V = vec3(0., 0., 1.);
+    vec3 L = normalize(uKey3);
+    vec3 Hv = normalize(L + V);
+    float wrap = mat == 1 ? 0.5 : mat == 5 ? 0.3 : 0.18;
+    float ndl = dot(N, L);
+    float diff = clamp((ndl + wrap) / (1. + wrap), 0., 1.);
+    // ambiente hemisférico: cielo arriba, rebote cálido del tatami abajo
+    vec3 light = mix(uBounce, uSky, N.y * 0.5 + 0.5) * ao + uKey * diff;
+    float sp = 0.;
+    float spec = fd.b;
+    // farolillos: luces puntuales sobre las cabezas
+    vec3 P3 = vec3(p.x, -p.y, 0.);
+    for (int i = 0; i < 4; i++) {
+        vec4 l = uLanterns[i];
+        if (l.w <= 0.) continue;
+        vec3 d = vec3(l.x, -l.y, 140.) - P3;
+        float r = length(d);
+        vec3 Ld = d / r;
+        float att = l.w * 160000. / (r * r + 40000.);
+        light += uLan * att * clamp((dot(N, Ld) + wrap) / (1. + wrap), 0., 1.);
+        sp += att * pow(max(dot(N, normalize(Ld + V)), 0.), 40.) * (mat == 1 ? 0.15 + spec : mat == 4 ? 0.8 : 0.1);
+    }
+    vec3 col = alb * light;
+    if (mat == 1) {
+        // piel: dispersión subsuperficial en la línea de sombra, brillo del sudor
+        float term = smoothstep(0.0, 0.35, diff) * (1. - smoothstep(0.35, 0.8, diff));
+        col += alb * uKey * vec3(1.0, 0.32, 0.2) * term * 0.45;
+        sp += pow(max(dot(N, Hv), 0.), 28.) * (0.06 + 0.45 * spec);
+    } else if (mat == 2) {
+        col += alb * uKey * pow(1. - N.z, 3.0) * 0.18;            // brillo de fibra del algodón
+    } else if (mat == 3) {
+        sp += pow(max(dot(N, Hv), 0.), 14.) * 0.55;                // satén y lycra
+        col += alb * uKey * pow(1. - N.z, 2.5) * 0.18;
+    } else if (mat == 4) {
+        sp += pow(max(dot(N, Hv), 0.), 46.) * 0.9;                 // cuero
+    } else if (mat == 5) {
+        vec3 Nh = normalize(N + vec3(0., 0.6, 0.));                // banda de brillo del pelo
+        sp += pow(max(dot(Nh, Hv), 0.), 36.) * (0.25 + 0.4 * spec);
+    }
+    col += (uKey + uLan * uLanI * 0.5) * sp;
+    // contraluz de los shōji en el borde que mira a la luz y halo de los farolillos desde arriba
+    float rim = pow(clamp(1. - N.z, 0., 1.), 2.2);
+    col += uKey * uRimI * 0.3 * rim * smoothstep(-0.1, 0.6, dot(normalize(N.xy + 1e-4), normalize(L.xy + 1e-4)));
+    col += uLan * uLanI * 0.45 * rim * smoothstep(0.1, 0.8, N.y);
+    return col * uTint;
+}
+
 void main() {
     vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
     vec4 bg = Lp(tBg, p);
@@ -249,7 +314,10 @@ void main() {
     coc = mix(coc, p.y < uFloorBackY ? 1. : 0.75, bg.a);
 
     vec4 fg = Lp(tFig, p);
-    if (fg.a > 0.004) {
+    if (fg.a > 0.004 && uFigLit > 0.5) {
+        col = mix(col, litFighter(p, fg), fg.a);
+        coc = mix(coc, 0., fg.a);
+    } else if (fg.a > 0.004) {
         vec3 c = toLin(fg.rgb) * uTint;
         vec2 ld = normalize(uLightDir);
         float aL = Lp(tFig, p + ld * 3.5).a;
@@ -288,7 +356,7 @@ void main() {
     s -= delta * hash12(gl_FragCoord.xy + fract(uTime) * 61.);
     for (int i = 0; i < 96; i++) { s -= delta; acc += mask(s) * illum; illum *= uDecay; }
     // los cuerpos están delante del aire iluminado: no se lavan con la neblina
-    acc *= 1. - 0.75 * texture(tFig, q).a;
+    acc *= 1. - 0.9 * texture(tFig, q).a;
     frag = vec4(vec3(acc / 96. * 3.), 1.);
 }
 """
@@ -528,6 +596,8 @@ def scene_params(dojo, cam, fighters, fx, cfg, extra=None) -> dict:
     p = dict(
         cam=(cam.x, zoom, base_y, cam.shake_x), depth=depth, floor_back=base_y - depth,
         key=_lin(rig["key"], g["key_i"]), amb=_lin(rig["ambient"], g["amb_i"]),
+        key3=g["key3"], sky=_lin(mixc(rig["ambient"], rig["sky_bot"], 0.4), g["amb_i"] * 1.5),
+        bounce=_lin(rig["floor"], 0.35 * g["amb_i"]),
         lan=(1.0 * rig["lanterns"], 0.5 * rig["lanterns"], 0.2 * rig["lanterns"]),
         tint=_lin(rig["tint"]), beam_i=g["beam_i"] if cfg.get("beams", True) else 0.0, lan_i=rig["lanterns"],
         refl=g["refl"], wet=g["wet"], rim=g["rim"], emissive=g["emissive"], sky_fill=g["sky_fill"],
@@ -582,6 +652,8 @@ class GPURenderer:
         self.t_bg = tex((W, H), mip=True)
         self.t_fig = tex((W, H), mip=True)
         self.t_fx = tex((W, H))
+        self.t_figd = tex((W, H), mip=True)
+        self._figd_blank = None
         self.t_hud = tex((W, H))
         self.t_scene = tex((W, H), dtype="f2")
         self.f_scene = ctx.framebuffer([self.t_scene])
@@ -659,11 +731,13 @@ class GPURenderer:
             self._set(prog, name, i)
 
     # ----- fotograma -----
-    def render(self, p: dict, bg, fig, fx, hud, dt=1 / 60, window_size=None):
+    def render(self, p: dict, bg, fig, fx, hud, dt=1 / 60, window_size=None, figd=None):
         ctx = self.ctx
         self.t += dt
         self._upload(self.t_bg, bg, mip=True)
         self._upload(self.t_fig, fig, mip=True)
+        if figd is not None:
+            self._upload(self.t_figd, figd, mip=True)
         self._upload(self.t_fx, fx)
         self._upload(self.t_hud, hud)
         S = self._set
@@ -671,9 +745,12 @@ class GPURenderer:
 
         # 1) escena HDR
         pr = self.p_scene
-        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx)
+        self._bind(pr, tBg=self.t_bg, tFig=self.t_fig, tFx=self.t_fx, tFigD=self.t_figd)
         S(pr, "uRes", (float(W), float(H)))
         S(pr, "uTime", self.t)
+        S(pr, "uFigLit", 1.0 if figd is not None else 0.0)
+        for k, n in (("key3", "uKey3"), ("sky", "uSky"), ("bounce", "uBounce")):
+            S(pr, n, tuple(float(v) for v in p[k]))
         S(pr, "uCam", tuple(float(v) for v in p["cam"]))
         S(pr, "uDepthScale", float(p["depth"]))
         S(pr, "uFloorBackY", float(p["floor_back"]))

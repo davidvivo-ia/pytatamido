@@ -814,7 +814,7 @@ class Match:
             surf.blit(dark, (0, 0))
         surf.blit(self.dojo.vignette(rig["vignette"] + (60 if self.ground else 0)), (0, 0))
 
-    def draw_layers(self, bg, fig, fxl, fonts: Fonts, photo=None) -> dict:
+    def draw_layers(self, bg, fig, fxl, fonts: Fonts, photo=None, figd=None) -> dict:
         """Camino GPU: fondo sin suelo, luchadores y efectos en capas separadas; devuelve los parámetros de luz."""
         from .gpu import scene_params
         rig = self.dojo.rig
@@ -823,6 +823,8 @@ class Match:
         bg.fill((0, 0, 0, 0))
         fig.fill((0, 0, 0, 0))
         fxl.fill((0, 0, 0, 0))
+        if figd is not None:
+            figd.fill((0, 0, 0, 0))
         self.dojo.draw(bg, self.cam, fonts, bw, gpu=True)
         self.dojo.draw_beams(None, self.cam, fxl, intensity_override=0)
         order = sorted(self.f, key=lambda f: (f.state in (Fighter.ATTACK, Fighter.KIAI, Fighter.THROWING), -abs(f.y)))
@@ -830,7 +832,7 @@ class Match:
             draw_trail(fxl, f, self.cam)
         cfg = dict(self.cfg, shadows=False)
         for f in order:
-            draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw)
+            draw_fighter(fig, f, self.cam, rig, cfg, self.debug, bw, data_surf=figd)
         self.fx.draw_world(fxl, self.cam, fxl)
         self.dojo.draw_rain(fxl)
         extra = {}

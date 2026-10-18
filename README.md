@@ -16,7 +16,8 @@ el taiko y el shakuhachi se generan en el arranque.
 
 ## Los luchadores
 
-![Los doce luchadores](docs/07_luchadores.jpg)
+![Los doce luchadores, tarde dorada](docs/07_luchadores.jpg)
+![Los doce luchadores, noche de farolillos](docs/08_luchadores_noche.jpg)
 
 Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anatomy.py` y `render_fighter.py`):
 
@@ -37,6 +38,12 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   altos, sambo agazapado, ginga de capoeira que oscila, sumo hundido, línea central del wing chun, ritmo
   de muay thai, rebote de taekwondo, cuclillas de lucha, bob and weave del boxeo y hanmi del aikido.
   Los golpes nacen de esa guardia y vuelven a ella.
+- **Iluminación por píxel de los sprites (renderer GPU):** cada luchador se dibuja dos veces, en color
+  plano y en un mapa de altura y material. La GPU deriva normales de ese relieve y los ilumina con la luz
+  real de cada asalto: piel con dispersión subsuperficial (borde de sombra cálido) y brillo del sudor,
+  algodón con brillo de fibra, satén y lycra con especular, cuero brillante, pelo con banda de brillo,
+  ambiente de cielo y rebote del tatami, oclusión ambiental, farolillos como luces puntuales y contraluz.
+  Músculos, pliegues del judogi, de la hakama y del mawashi son surcos de relieve que la luz recorre.
 - **Acabado:** contorno por capas de profundidad (el brazo delantero se recorta sobre el pecho), sombreado
   de tres tonos según la luz, sudor que hace brillar la piel, antebrazos que enrojecen al bloquear,
   supermuestreo 2× (3× en el preset *cine*) y contorno del color del jugador en los frames activos.
@@ -53,7 +60,8 @@ renderer de pygame. pygame dibuja las capas (fondo, luchadores, efectos, HUD) y 
 - **Sombras proyectadas** de los luchadores y oclusión de contacto bajo los pies.
 - **Farolillos** como luces puntuales sobre el suelo, con su reflejo alargado en el barniz.
 - **Reflejos** de luchadores y pared en el suelo; en el desempate, suelo mojado con ondas de lluvia.
-- **Rim light y sombra de forma** en los cuerpos según la dirección de la luz de cada asalto.
+- **Luchadores iluminados por píxel** a partir de su mapa de altura y material (ver *Los luchadores*).
+- **Estelas** de los golpes fuertes con la silueta real del luchador en el color del jugador.
 - **HDR:** bloom de doble filtro, tonemapping AgX, gradación por asalto, aberración cromática,
   ondas de choque en los golpes fuertes, foco cenital y frame de impacto en el Kiai, viñeta,
   grano de película, profundidad de campo por CoC (Kiai, Modo Foto, menús), LUTs y FXAA.
