@@ -76,6 +76,8 @@ class Game:
         self.arcade_lost_round = False
         self.tourney: List[str] = []
         self.results_t = 0
+        self.replay_files: List[str] = []
+        self.replay_i = 0
         self.title_dojo = Dojo(self.cfg)
         self.title_cam = Camera()
         self.title_cam.zoom = 0.9
