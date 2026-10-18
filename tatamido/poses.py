@@ -80,6 +80,23 @@ def pose_idle(t, fd, breath):
         x, y = p[k]
         f = 1.0 if k != "hip" else 0.5
         p[k] = (x + dx * f, y + dy)
+    # guardia viva: el peso pasa despacio de un pie a otro, los hombros ruedan a destiempo, las manos
+    # dibujan pequeños círculos y la cabeza llega un poco tarde al movimiento del pecho
+    vivo = 0.35 if fid == "lin" else 1.0
+    ph = (sum(map(ord, fid)) % 23) / 23.0 * 6.2832
+    ws = math.sin(t * 0.9 + ph) * vivo
+    for k, a in (("hip", 2.5), ("chest", 1.6), ("head", 1.2), ("sh_l", 1.4), ("sh_r", 1.4)):
+        p[k] = (p[k][0] + a * ws, p[k][1])
+    p["kn_r"] = (p["kn_r"][0] + 1.5 * ws, p["kn_r"][1] + 1.2 * max(0.0, ws))
+    p["kn_l"] = (p["kn_l"][0] + 1.0 * ws, p["kn_l"][1] + 1.2 * max(0.0, -ws))
+    roll = math.sin(t * 1.7 + ph) * vivo
+    p["sh_l"] = (p["sh_l"][0], p["sh_l"][1] + 1.1 * roll)
+    p["sh_r"] = (p["sh_r"][0], p["sh_r"][1] - 1.1 * roll)
+    for k, sgn, amp in (("hd_l", 1.0, 1.6), ("hd_r", -1.0, 1.9), ("el_l", 1.0, 0.8), ("el_r", -1.0, 0.9)):
+        a = t * 1.9 + ph + (0.0 if k.endswith("l") else 1.3)
+        p[k] = (p[k][0] + amp * vivo * math.cos(a), p[k][1] + amp * vivo * sgn * math.sin(a) + (1.1 * roll * sgn if k.startswith("el") else 0.0))
+    hb = math.sin(t * 2.2 - 0.6) * (0.8 + breath) * vivo
+    p["head"] = (p["head"][0] + 0.8 * math.sin(t * 1.1 + ph) * vivo, p["head"][1] + hb)
     if feet_dy:
         for k in ("ft_l", "ft_r"):
             p[k] = (p[k][0], p[k][1] + feet_dy)
@@ -218,14 +235,18 @@ def _attack_shape(anim, base, ext, lean, fd, kick):
 
 
 def pose_hit(phase, fd):
+    # relativa a la guardia de cada estilo: con coordenadas absolutas el sumo (más bajo y ancho) cruzaba
+    # los brazos sobre el pecho y la cabeza salía disparada hacia arriba
     p = pose_idle(0, fd, 0)
     k = 1 - smoothstep(phase)
-    p["head"] = (4 - 26 * k, -170 + 8 * k)
-    p["chest"] = (2 - 14 * k, -138)
-    p["hd_l"] = (12 - 10 * k, -120)
-    p["hd_r"] = (30 - 20 * k, -110)
-    p["el_l"] = (6, -118)
-    p["el_r"] = (24, -112)
+    hx, hy = p["head"]
+    cx, cy = p["chest"]
+    p["head"] = (hx - 26 * k, hy + 6 + 8 * k)
+    p["chest"] = (cx - 14 * k, cy + 2)
+    for s_, (ex, ey), (hx_, hy_) in (("l", (12, 20), (18 - 10 * k, 18)), ("r", (16, 26), (22 - 20 * k, 28))):
+        sx_, sy_ = p["sh_" + s_]
+        p["el_" + s_] = (sx_ + ex, sy_ + ey)
+        p["hd_" + s_] = (sx_ + hx_, sy_ + hy_)
     return p
 
 

@@ -1080,6 +1080,24 @@ class Secondary:
         self.pts[name] = q
         return (p[0] + dx, p[1] + dy)
 
+    def spring(self, name, target, stiff=0.16, damp=0.82):
+        """Muelle amortiguado de un grado de libertad (pelo, cinturón, flecos): persigue `target` con
+        inercia, se pasa y vuelve. Un paso por fotograma de simulación."""
+        st = getattr(self, "spr", None)
+        if st is None:
+            st = self.spr = {}
+        x, v = st.get(name, (target, 0.0))
+        if self.fresh:
+            v = (v + (target - x) * stiff) * damp
+            x += v
+        st[name] = (x, v)
+        return x
+
+    def velocity(self, name, p):
+        """Velocidad del punto p (local) en el mundo, en unidades de pose por fotograma."""
+        q, _ = self.motion(name, p)
+        return (p[0] - q[0], p[1] - q[1])
+
     def motion(self, name, p):
         """Dónde estaba el punto p (local) en el fotograma anterior y su velocidad en cm por fotograma."""
         w = (p[0] + self.root[0], p[1] + self.root[1])
@@ -1167,6 +1185,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     strike = _strike(f, J, B)                # puñetazo activo: brazo que golpea y zancada hasta el rival
     sec = Secondary.of(f)
     H, Cc0, Hd0 = J["hip"], J["chest"], J["head"]
+    hip_vx, _ = sec.velocity("spr_hip", H)          # para el cinturón, los cordones y los flecos con muelle
     # el esqueleto de poses deja los hombros bajos y la cabeza lejos (36 cm): subimos la cintura
     # escapular y acercamos la cabeza para un cuello real de ~8 cm visibles
     lift = ((Hd0[0] - Cc0[0]) * 0.15, (Hd0[1] - Cc0[1]) * 0.15)
@@ -1652,7 +1671,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             bc = C(lk.get("belt", "#111111"), tx)
             fig.poly(4, band(0.17, 0.26, grow + 0.4, grow + 0.4), bc, sheen=0.6)
             knot = S(0.215, wf(0.215) + grow + 1.0)
-            sw = math.sin(t_anim * 4.2 + f.x * 0.01) * 2.5 - vxl * 1.6
+            sw = sec.spring("belt", math.sin(t_anim * 4.2 + f.x * 0.01) * 0.8 + clamp(-hip_vx * 1.4, -6.0, 6.0), 0.14, 0.86)
             ln_ = 24 + 12 * dish
             e1 = (knot[0] + 2 + sw, knot[1] + ln_)
             e2 = (knot[0] + 6 + sw * 0.7, knot[1] + ln_ * 0.9)
@@ -1710,7 +1729,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         y_, g_ = lk["cord"]
         fig.poly(4, band(0.04, 0.09, 2.5, 2.5), C(y_, tx), sheen=1.0)
         k0 = S(0.065, wf(0.065) + 2.6)
-        sw = math.sin(t_anim * 5) * 2 - vxl
+        sw = sec.spring("cord", math.sin(t_anim * 5) * 0.8 + clamp(-hip_vx * 1.1, -5.0, 5.0), 0.16, 0.84)
         fig.line(4, [k0, (k0[0] + 1 + sw, k0[1] + 16)], C(y_, tx), 0.9)
         fig.line(4, [k0, (k0[0] + 3 + sw, k0[1] + 15)], C(g_, tx), 0.9)
     elif bottom == "track":
@@ -1727,7 +1746,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         top_ = S(0.16, wf(0.16) + 2.0)
         bot_ = S(-0.12, wf(-0.1) + 1.0)
         fig.tube(4, top_, bot_, 3.2, 2.6, mc, sheen=1.6)
-        sw = math.sin(t_anim * 3) * 1.5 - vxl * 1.2
+        sw = sec.spring("sagari", math.sin(t_anim * 3) * 0.6 + clamp(-hip_vx * 1.2, -5.0, 5.0), 0.12, 0.85)
         for i in range(7):
             p = S(0.02, wf(0.02) + 2.4 - i * 1.6)
             fig.line(4, [p, (p[0] + sw * (0.6 + i * 0.08), p[1] + 20 + (i % 2) * 2)], shade(mc, 1.25), 0.45)
@@ -1784,7 +1803,10 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         face_c = mixc(face_c, (205, 85, 75), min(0.45, 0.12 + 0.25 * getattr(f, "breath", 0.0) + 0.3 * red))
     hair_c = C(lk["hair_c"], Hd[0])
     hair = lk["hair"]
-    sw_h = math.sin(t_anim * 3.1) * 0.12 - vxl * 0.05 + vy * 0.01
+    # pelo con física de muelle: la cabeza que se mueve deja atrás coletas, trenzas, rastas y flequillo,
+    # que se pasan de largo al frenar y oscilan hasta asentarse
+    hvx, hvy = sec.velocity("spr_head", Hd)
+    sw_h = sec.spring("hair", math.sin(t_anim * 3.1) * 0.05 + clamp(hvx * 0.06, -0.3, 0.3) + clamp(hvy * 0.02, -0.15, 0.15))
 
     # coletas y trenzas detrás de la cabeza
     fig.m("hair")
@@ -2504,13 +2526,33 @@ def record_figure(f, pose, x0, y0, K, rig, ocol, ow, batch, ss=1.6):
     return ra.bounds()
 
 
+def squash_stretch(f, pose):
+    """Aplastar y estirar (principio clásico de animación) sobre el esqueleto, con los pies como ancla:
+    al aterrizar el cuerpo se aplasta; al encajar un golpe se comprime en el eje del impacto y se alarga;
+    en los fotogramas activos de un ataque se estira hacia el rival. El volumen aparente se conserva."""
+    sx = sy = 1.0
+    if f.squash > 0.02 and f.y >= 0:
+        q = 1 - 0.12 * f.squash
+        sx, sy = 2 - q, q
+    if f.state in (Fighter.HIT, Fighter.STUN) and f.timer < 8:
+        k = (1.0 - f.timer / 8.0) ** 1.5
+        sx *= 1.0 - 0.08 * k
+        sy *= 1.0 + 0.035 * k
+    elif f.state == Fighter.ATTACK and f.move is not None:
+        st, ac = f.move.startup, f.move.active + 3
+        if st <= f.timer < st + ac:
+            k = 1.0 - (f.timer - st) / ac
+            sx *= 1.0 + 0.05 * k
+            sy *= 1.0 - 0.02 * k
+    if sx == 1.0 and sy == 1.0:
+        return pose
+    return {k: (v[0] * sx, v[1] * sy) for k, v in pose.items()}
+
+
 def draw_fighter(surf, f: Fighter, cam: Camera, rig: dict, cfg: dict, debug=False, lut_bw=False, data_surf=None, pieces=None,
                  batch=None):
     """Luchador en pantalla: sombra (renderer CPU), figura supermuestreada y cajas de depuración."""
-    pose = fighter_pose(f)
-    if f.squash > 0.02 and f.y >= 0:
-        q = 1 - 0.12 * f.squash
-        pose = {k: (v[0] * (2 - q), v[1] * q) for k, v in pose.items()}
+    pose = squash_stretch(f, fighter_pose(f))
     f.lastpose = pose
     sc = f.scale
     if cfg.get("shadows", True):
