@@ -47,10 +47,19 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   hombro, bíceps, codo, antebrazo, muñeca; cuádriceps, rodilla, gemelo, tobillo). Las siluetas grandes
   pasan por suavizado de Chaikin; los detalles son pinceladas que engordan en el centro y se afilan en
   las puntas; el pelo se peina con mechones curvos y la coleta es un mechón afilado que se mece.
-- **Tinta de peso variable:** el contorno engorda en el lado que se aleja de la luz y adelgaza en el
-  iluminado, como un entintador a pincel.
-- **Rostro diseñado:** ojo con iris del color de cada ficha, pupila y brillo, párpado superior grueso,
-  cejas de pincel, nariz y rubor; puños cerrados con nudillos y manos abiertas con dedos para el agarre.
+- **Tinta de peso variable y de color:** el contorno engorda en el lado que se aleja de la luz y adelgaza
+  en el iluminado, como un entintador a pincel; en la GPU toma el tono oscuro de la pieza que bordea (no
+  negro plano) y en la silueta que mira a la llave la luz se lo come: línea rota.
+- **Rostro diseñado:** ojo paramétrico (blanco, iris con borde del color de cada ficha, pupila, dos
+  brillos húmedos, párpados que cubren lo que el ojo no abre, pestañas en ellas), cejas de pincel, oreja
+  con hélice, concha y trago, nariz con aleta y nueve bocas. Las expresiones mueven cejas, párpados y
+  boca a la vez: foco, ferocidad, grito, esfuerzo con los dientes, dolor con los ojos apretados, sonrisa,
+  jadeo y KO. Los rasgos comparten pieza y altura con la cara, así no proyectan rayas de sombra.
+- **Pelo por mechones:** base más oscura y mechones con su eje y su tono para cada peinado (corto,
+  recogido, melena, rizado, rastas, rapado, chonmage, coleta, trenzas).
+- **Manos y pies:** manos un 8 % mayores con nudillos y metacarpos en relieve, uñas, garra al hacer presa
+  y vendas de muay thai en Somchai (muñeca, cruce en X por el dorso y vuelta sobre los nudillos); pies
+  descalzos con arco, dedo gordo con uña, dedos de detrás, maléolo y bola del pie.
 - **Tejidos diseñados, pieza a pieza (GPU):** el mapa de datos guarda en cada píxel el número de su
   pieza, y una tabla por fotograma da a la GPU el ancla, el eje, la escala, el material y el tejido de
   cada una. Así cada píxel sabe dónde está *dentro* de su manga, pernera, mechón o cinturón, en
@@ -91,7 +100,31 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   real de cada asalto: piel con dispersión subsuperficial (borde de sombra cálido) y brillo del sudor,
   algodón con brillo de fibra, satén y lycra con especular, cuero brillante, pelo con banda de brillo,
   ambiente de cielo y rebote del tatami, oclusión ambiental, farolillos como luces puntuales y contraluz.
-  Músculos, pliegues del judogi, de la hakama y del mawashi son surcos de relieve que la luz recorre.
+  Pliegues del judogi, de la hakama y del mawashi son surcos de relieve que la luz recorre.
+- **Luz de personaje:** contraluz recortado sólo en los cantos reales (con el lado de la llave y un halo
+  trasero), oclusión de contacto en axilas, entrepierna, bajo la barbilla y el cinturón (horizonte en 8
+  direcciones sobre el campo de alturas), piel translúcida en las piezas finas (orejas, dedos, nariz) y
+  brillo de piel por zonas (frente, puente de la nariz, pómulo, hombros, nudillos) en degradado.
+- **Musculatura en relieve:** en la piel desnuda los músculos son relieves suaves del mapa de alturas,
+  no líneas: pectoral, recto abdominal, oblicuo, serrato, dorsal y erectores; bíceps que se hincha al
+  doblar el brazo, tríceps y antebrazo; cuádriceps, vasto y gemelo. Cada cuerpo con su definición.
+- **Torso vivo:** la columna se curva (espalda redonda al agacharse o bloquear, arqueada al encajar en la
+  cara), el tronco se tuerce con el golpe y la cintura escapular sube y baja al respirar.
+- **Ropa que responde:** tensión del cinturón a la axila del brazo que golpea, faldón en abanico según la
+  zancada, manga retorcida con el brazo estirado y tablas de hakama con canto planchado.
+- **Guardia viva y aplastar y estirar:** el peso pasa de un pie a otro, los hombros ruedan a destiempo,
+  las manos dibujan círculos y la cabeza llega tarde; el cuerpo se aplasta al aterrizar, se comprime en
+  el eje del impacto y se estira hacia el rival en los fotogramas activos.
+- **Física de muelle:** coleta, trenzas, rastas, flequillo, mongkol, cinturón, cordón de capoeira y sagari
+  del mawashi son muelles amortiguados movidos por la velocidad real de la cabeza y la cadera: se quedan
+  atrás, se pasan al frenar y oscilan hasta asentarse.
+- **Desgaste del combate:** el sudor, el rubor y el pelo revuelto se arrastran entre asaltos; los golpes
+  dejan marca según su altura (moratón e hinchazón en el pómulo, brecha en la ceja, costillas,
+  espinilla); gotas de sudor en la frente y pelo oscurecido por el sudor.
+- **Retratos con luz por píxel:** los retratos del menú se hornean en la GPU con la luz del combate y un
+  farolillo de retrato que pone el brillo en los ojos.
+
+![Los doce, en guardia, jab, patada e impacto](docs/11_poses.jpg)
 - **Acabado:** contorno por capas de profundidad (el brazo delantero se recorta sobre el pecho), sombreado
   de tres tonos según la luz, sudor que hace brillar la piel, antebrazos que enrojecen al bloquear,
   supermuestreo 2× (3× en el preset *cine*) y contorno del color del jugador en los frames activos.
@@ -148,6 +181,8 @@ renderer de pygame. pygame dibuja las capas (fondo, luchadores, efectos, HUD) y 
   pygame (test incluido). Medido en el contenedor de desarrollo, la CPU sigue limitada por la geometría en
   Python: el camino de la GPU sólo gana a 4K (28 frente a 32 ms) y se activa solo a partir de ahí
   (`TATAMIDO_GPU_RASTER=1/0` lo fuerza). Pasar también la geometría a la GPU es el siguiente salto.
+  El detalle de los personajes de la edición actual (mechones, rasgos, dedos, relieves musculares) cuesta
+  unos 4-5 ms más de CPU por fotograma en ese contenedor (de ~17 a ~21 ms a 1080p con dos luchadores).
 - **HDR:** bloom de doble filtro, tonemapping AgX, gradación por asalto, aberración cromática,
   ondas de choque en los golpes fuertes, foco cenital y frame de impacto en el Kiai, viñeta,
   grano de película, profundidad de campo por CoC (Kiai, Modo Foto, menús), LUTs y FXAA.

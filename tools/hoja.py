@@ -154,6 +154,7 @@ def main():
     ap.add_argument("--fighters", default="haruki,kanoa,ayo")
     ap.add_argument("--poses", default="guardia,jab,patada,agarre")
     ap.add_argument("--round", type=int, default=1)
+    ap.add_argument("--cols", type=int, default=0, help="columnas de la rejilla (por omisión, una por pose)")
     ap.add_argument("--studio", action="store_true", help="fondo neutro en vez del dojo")
     ap.add_argument("--out", default="hoja.png")
     ap.add_argument("--refs", action="store_true", help="regenera las imágenes de referencia de tests/ref")
@@ -172,7 +173,7 @@ def main():
         return
     from tatamido.game import Game
     G = Game(dict(preset="ultra", headless=True, windowed=True, renderer="gpu"))
-    img = sheet(G, a.fighters.split(","), a.poses.split(","), a.round, studio=a.studio)
+    img = sheet(G, a.fighters.split(","), a.poses.split(","), a.round, cols=a.cols or None, studio=a.studio)
     pygame.image.save(img, a.out)
     print(a.out, img.get_size())
 

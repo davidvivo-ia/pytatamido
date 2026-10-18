@@ -243,7 +243,11 @@ def pose_hit(phase, fd):
     cx, cy = p["chest"]
     p["head"] = (hx - 26 * k, hy + 6 + 8 * k)
     p["chest"] = (cx - 14 * k, cy + 2)
-    for s_, (ex, ey), (hx_, hy_) in (("l", (12, 20), (18 - 10 * k, 18)), ("r", (16, 26), (22 - 20 * k, 28))):
+    for s_ in ("l", "r"):                          # los hombros van con el pecho: si no, el brazo quedaba delante
+        sx_, sy_ = p["sh_" + s_]
+        p["sh_" + s_] = (sx_ - 13 * k, sy_ + 3 + 6 * k)
+    # brazos sueltos que el golpe despide hacia atrás, manos a la altura del pecho (no en jarras)
+    for s_, (ex, ey), (hx_, hy_) in (("l", (-4 - 4 * k, 26), (12 - 8 * k, 28)), ("r", (-2 - 6 * k, 27), (18 - 10 * k, 30))):
         sx_, sy_ = p["sh_" + s_]
         p["el_" + s_] = (sx_ + ex, sy_ + ey)
         p["hd_" + s_] = (sx_ + hx_, sy_ + hy_)

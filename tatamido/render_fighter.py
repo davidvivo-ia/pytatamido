@@ -726,6 +726,8 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
             # "gloss": sólo existe en el mapa de datos
 
 
+_RING = {n: [(math.cos(i * 2 * math.pi / n), math.sin(i * 2 * math.pi / n)) for i in range(n)] for n in (10, 14)}
+
 GROUP_H = {0: 46, 1: 66, 2: 106, 3: 126, 4: 150, 5: 176, 6: 210}
 
 
@@ -886,23 +888,28 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                 _D.circle(surf, val, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
             elif kind == "bump":
                 (cx_, cy_), ra, rb, ang, hb = geo
+                rpx = max(ra, rb) * k
+                if rpx < 2.5 or hb < 0.5:                # a este tamaño el relieve no se ve
+                    continue
                 ca_, sa_ = math.cos(ang), math.sin(ang)
-                nr = max(6, int(hb) + 3)                 # un escalón de altura por anillo como mucho
+                # un escalón de altura por anillo como mucho, y no más anillos que píxeles de radio / 2
+                nr = int(clamp(min(hb + 2, rpx / 2.0), 3, 10))
+                nv = 10 if rpx < 12 else 14
                 for j in range(nr):
                     f_ = 1.0 - j / nr
                     hv = min(255, h0 + int(round(hb * (1.0 - f_ * f_) ** 1.5)))
                     pts = []
-                    for i in range(14):
-                        a = i * math.pi / 7
-                        u, v = math.cos(a) * ra * f_, math.sin(a) * rb * f_
+                    for cu, su in _RING[nv]:
+                        u, v = cu * ra * f_, su * rb * f_
                         pts.append(T((cx_ + u * ca_ - v * sa_, cy_ + u * sa_ + v * ca_)))
                     _D.polygon(surf, (hv, pid, spec), pts)
             elif kind == "gloss":
                 c, r = geo
                 cc = T(c)
                 # sin escalón de altura (un disco alzado proyecta sombra) y con el brillo en degradado, no en moneda
-                for j in range(6):
-                    f_ = 1.0 - j / 6.0
+                nr = int(clamp(r * k / 1.5, 1, 6))
+                for j in range(nr):
+                    f_ = 1.0 - j / nr
                     _D.circle(surf, (h0, pid, int(spec * (0.22 + 0.78 * (1.0 - f_) ** 0.7))), (int(cc[0]), int(cc[1])),
                               max(1, int(r * k * f_)))
     return pieces
