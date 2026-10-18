@@ -69,7 +69,7 @@ LOOKS = {
                  extras=["coliflor", "parches"], top="gi", bottom="gi", cloth="#2C5AA0", collar="#244C8A", belt="#111111",
                  accent="#F2F2F2", sleeve=0.88, feet="descalzo", belt_style="grados", expression="sonrisa"),
     "somchai": dict(body="fibroso", skin="#B07D4F", hair_c="#111111", hair="corto", nose="ancha", jaw=1.1, brow=1.1,
-                    extras=["sak_yant", "mongkol", "prajied", "definido"], top="none", bottom="shorts_thai",
+                    extras=["sak_yant", "mongkol", "prajied", "definido", "vendas"], top="none", bottom="shorts_thai",
                     cloth="#C1121F", accent="#FDF0D5", band=("#FDF0D5", "#003049"), feet="descalzo", expression="seria"),
     "yeon": dict(eyes="#2A1A14", body="atleta_f", skin="#F1D3B3", hair_c="#2A1F1A", hair="coleta", nose="fina", jaw=0.9, brow=0.9,
                  extras=[], top="gi", bottom="gi", cloth="#FFFFFF", collar="#0C0C0C", belt="#111111", sleeve=0.86,
