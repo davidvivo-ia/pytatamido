@@ -412,14 +412,14 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         ak = 1. + v * (0.16 * rib - 0.1);
         sk = 0.5;
     } else if (pat == 12) {                          // pelo: mechones y hebras que siguen la caída
-        float s = q.y + 1.2 * (vnoise(vec2(q.x * 0.16, seed)) - 0.5);
+        float s = q.y + 2.6 * (vnoise(vec2(q.x * 0.22, seed)) - 0.5) + 0.8 * (vnoise(q * 0.5 + seed) - 0.5);
         float ci = floor(s / 0.95);
         float clump = bump1(s / 0.95);
         float fine = 0.5 + 0.5 * sin(6.2831853 * s / 0.38 + hash12(vec2(ci, seed)) * 6.);
         float v = vis(0.95, pxcm), v2 = vis(0.38, pxcm);
-        h = clump * 0.55 * v + fine * 0.12 * v2;
-        ak = 1. + v * (0.24 * clump - 0.13 + 0.14 * (hash12(vec2(ci, seed + 1.3)) - 0.5)) + v2 * 0.06 * (fine - 0.5);
-        sk = 0.4 + 1.0 * clump;
+        h = clump * 0.3 * v + fine * 0.1 * v2;
+        ak = 1. + v * (0.1 * clump - 0.05 + 0.08 * (hash12(vec2(ci, seed + 1.3)) - 0.5)) + v2 * 0.05 * (fine - 0.5);
+        sk = 0.75 + 0.35 * clump;
     } else if (pat == 14) {                          // solapa: tres pespuntes a lo largo
         float a = abs(q.y) / (max(wcm, 0.5) * 0.5);
         float rows = a * 3.;
@@ -467,6 +467,8 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         }
     }
 }
+
+vec3 hue_(vec3 c) { return c / max(max(c.r, c.g), max(c.b, 1e-3)); }
 
 vec3 litFighter(vec2 p, vec4 fg) {
     vec3 alb = toLin(fg.rgb);
@@ -523,6 +525,23 @@ vec3 litFighter(vec2 p, vec4 fg) {
     if (uDebugN > 0.5 && uDebugN < 1.5) return toLin(N * 0.5 + 0.5) / max(uTint, vec3(0.05));
 
     float ao = 1. - clamp((Lp(tFigD, p, 4.2 + LB()).r - fd.r) * 2.2, 0., 0.5);
+    // oclusión de contacto: lo que se mete bajo otra parte (axila, entrepierna, bajo la barbilla o el cinturón)
+    // recibe menos cielo. Horizonte en 8 direcciones y dos radios sobre el campo de alturas.
+    {
+        float kg = 0.3 * pxcm;
+        float h0c = figHeight(p, kg);
+        float occ = 0.;
+        for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398 + 0.39;
+            vec2 dir = vec2(cos(a), sin(a));
+            for (int j = 1; j <= 2; j++) {
+                float r = float(j) * 4.5 * pxcm;
+                float dh = figHeight(p + dir * r, kg) - h0c - 0.8 * pxcm;
+                occ += clamp(dh / r, 0., 1.) * (j == 1 ? 0.6 : 0.4);
+            }
+        }
+        ao *= 1. - clamp(occ / 8. * 1.6, 0., 0.55);
+    }
     vec3 V = vec3(0., 0., 1.);
     vec3 L = normalize(uKey3);
     vec3 Hv = normalize(L + V);
@@ -572,12 +591,18 @@ vec3 litFighter(vec2 p, vec4 fg) {
     vec3 Na = normalize(N - T3 * dot(N, T3) * 0.9);
     float nh = dot(N, Hv), nha = dot(Na, Hv);
     float hi = 0.;
-    if (mat == 1) hi = smoothstep(0.955, 0.985, nh) * (0.06 + 0.5 * spec) + smoothstep(0.86, 0.97, nh) * 0.04 * (0.6 + br);   // sudor y brillo graso
+    if (mat == 1) {
+        // brillo graso y de sudor: duro en las zonas que lo tienen (frente, nariz, pómulo, hombros, nudillos:
+        // parches de brillo del mapa de datos) y una película suave en el resto
+        float zone = smoothstep(0.35, 0.75, spec);
+        hi = smoothstep(0.955 - 0.05 * zone, 0.985, nh) * (0.06 + 0.5 * spec) + smoothstep(0.86, 0.97, nh) * 0.04 * (0.6 + br)
+           + zone * smoothstep(0.8, 0.95, nh) * 0.12;
+    }
     else if (mat == 3) hi = smoothstep(0.84, 0.96, nha) * (pat == 9 ? 0.18 : 0.4) * mix(1., sk, uTexI) + pow(1. - N.z, 3.) * 0.1;
     else if (mat == 4) hi = smoothstep(0.9, 0.97, nh) * 0.7 * spec;                                     // cuero
     else if (mat == 5) {                                                                           // anillo del pelo
         float band = smoothstep(0.9, 0.975, dot(normalize(Na + vec3(0., 0.35, 0.)), Hv)) * mix(1., sk, uTexI);
-        hi = band * (0.12 + 0.3 * spec) * (0.3 + 2.2 * sqrt(luma(alb)));        // en pelo negro, brillo azulado y contenido
+        hi = band * (0.1 + 0.25 * spec) * (0.3 + 2.2 * sqrt(luma(alb)));        // en pelo negro, brillo frío y contenido
     }
     else if (mat == 2) hi = smoothstep(0.62, 0.72, 1. - N.z) * 0.1 + (pat == 5 ? smoothstep(0.8, 0.94, nha) * 0.35 * sk : 0.);
     float drop = 0.;
@@ -599,14 +624,28 @@ vec3 litFighter(vec2 p, vec4 fg) {
         hi += drop * 0.9;
     }
     vec3 hue = alb / max(max(alb.r, alb.g), max(alb.b, 1e-3));
-    vec3 hiCol = mat == 5 ? mix(vec3(0.62, 0.72, 1.0) * luma(uKey) * 1.3, uKey, clamp(luma(alb) * 3., 0., 1.))
+    vec3 hiCol = mat == 5 ? mix(vec3(0.78, 0.82, 0.95) * luma(uKey) * 1.2, uKey, clamp(luma(alb) * 3., 0., 1.))
                : mat == 3 || pat == 5 || pat == 9 ? uKey * mix(vec3(1.), hue, 0.65)          // la seda tiñe su brillo
                : uKey;
     col += (hiCol * lit + uLan * uLanI * 0.4) * hi + uLan * lanHi * (mat == 1 ? 0.22 : mat == 4 ? 0.6 : mat == 5 ? 0.05 : 0.15);
-    // contraluz recortado: shōji del lado de la luz, farolillos desde arriba
+    // contraluz recortado: una línea nítida de luz en la silueta del lado de la luz (con las normales de forma
+    // reales: sólo en los cantos, no en las mellas interiores), un halo fino de los shōji a la espalda en todo
+    // el contorno alto, y los farolillos desde arriba
+    vec2 nxy = normalize(N0.xy + 1e-4);
+    float edge = smoothstep(0.62, 0.86, 1. - N0.z);
+    float keySide = smoothstep(0.15, 0.6, dot(nxy, normalize(vec2(L.x, L.y) + 1e-4)));
+    float rimK = edge * keySide * (mat == 6 ? 0. : 1.);
+    col += uKey * uRimI * 0.75 * rimK * mix(vec3(1.), hue_(alb), 0.25);
+    float back = smoothstep(0.78, 0.95, 1. - N0.z) * (0.45 + 0.55 * smoothstep(-0.2, 0.8, N0.y));
+    col += mix(uKey, uSky * 2., 0.4) * uRimI * 0.28 * back * (mat == 6 ? 0. : 1.);
     float rimM = smoothstep(0.5, 0.62, 1. - N.z);
-    col += uKey * uRimI * 0.55 * rimM * smoothstep(0.1, 0.5, dot(normalize(N.xy + 1e-4), normalize(L.xy + 1e-4)));
     col += uLan * uLanI * 0.6 * rimM * smoothstep(0.2, 0.7, N.y);
+    // piel translúcida: orejas, dedos, nariz y bordes finos se encienden en rojo a contraluz
+    if (mat == 1) {
+        float thin = 1. - smoothstep(1.6, 5.0, wcm);
+        float trans = thin * (0.35 + 0.65 * edge) * (0.5 + 0.5 * uRimI);
+        col += alb * vec3(1.0, 0.32, 0.22) * (uKey * 0.55 + uLan * uLanI * 0.6) * trans;
+    }
     // degradado de ilustración: los pies se enfrían y oscurecen un poco, la cabeza recibe la luz
     vec4 fr = abs(p.x - uFighters[0].x) < abs(p.x - uFighters[1].x) ? uFighters[0] : uFighters[1];
     float hgt = clamp((fr.y - fr.z - p.y) / (pxcm * 175.), 0., 1.);

@@ -352,6 +352,11 @@ class Figure:
     def dot(self, g, c, r, color):
         self._add(g, "dot", (c, r), color, False, False, 0.0, False, self.groove)
 
+    def gloss(self, g, c, r, sheen):
+        """Zona de brillo (frente, nariz, pómulo, hombro, nudillos): no se pinta en color; en el mapa de datos
+        sube el brillo de la piel que ya hay debajo, sin tocar la altura."""
+        self._add(g, "gloss", (c, r), (0, 0, 0), False, False, sheen, False, False)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  GRABADOR: los mismos trazos, en triángulos para la GPU
@@ -713,6 +718,7 @@ def _render(fig: Figure, surf, T, k, ow, ocol, flat=None, ss=2, fac=1, baked=Tru
                 c, r = geo
                 cc = T(c)
                 _D.circle(surf, col, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
+            # "gloss": sólo existe en el mapa de datos
 
 
 GROUP_H = {0: 46, 1: 66, 2: 106, 3: 126, 4: 150, 5: 176, 6: 210}
@@ -786,7 +792,7 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
             spec = int(clamp(sheen * 55, 0, 255))
             pf = shared.get(("f", idx)) if shared is not None else None
             pid2 = None
-            if groove:
+            if groove or kind == "gloss":
                 pid = state["body"] or state["last"]
             elif kind in ("line", "dot") and state["body"] and state["body_mat"] == mat:
                 pid = state["body"]           # trazos y puntos del mismo material: no gastan entrada en la tabla
@@ -810,6 +816,8 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                     ids.append(piece((cx, cy), ang, rr, mat, pat, idx + 1000 * len(ids)))
                 pid = ids[0]
                 pid2 = (ids[1], mcut, len(P)) if len(ids) > 1 else None
+            elif kind == "poly" and g == 5 and not outline and mat in ("skin", "eye") and state["body"] and state["body_mat"] == "skin":
+                pid = state["body"]           # rasgos de la cara (ojo, párpado, boca, oreja): parte de la cara, sin cúpula propia
             elif kind == "poly":
                 anchor, ang, wpx = _axis([T(q) for q in geo])
                 pid = piece(anchor, ang, wpx, mat, pat, idx)
@@ -854,7 +862,9 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                 if len(P) >= 2:
                     # surco: pliegue o músculo ancho y poco profundo (una arruga, no un corte)
                     gd = 12 if mat == "skin" else 8
-                    val = (max(0, h0 - gd), pid, spec) if groove else (h0 + 4, pid, spec)
+                    # los rasgos de la cara (ojos, boca, arrugas) no tienen relieve: alzados proyectan rayas de sombra
+                    flat = g == 5 and mat in ("skin", "eye")
+                    val = (max(0, h0 - gd), pid, spec) if groove else (h0 + (0 if flat else 4), pid, spec)
                     wpx = max(1.0, w * k * ((2.2 if mat == "skin" else 2.8) if groove else 1.0))
                     if pf is not None and not groove:
                         bp = pf if inv == 1.0 else [(x * inv, y * inv) for x, y in pf]
@@ -867,8 +877,16 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
             elif kind == "dot":
                 c, r = geo
                 cc = T(c)
-                val = (max(0, h0 - 10), pid, spec) if groove else (h0 + 4, pid, spec)
+                val = (max(0, h0 - 10), pid, spec) if groove else (h0 + (0 if g == 5 and mat in ("skin", "eye") else 4), pid, spec)
                 _D.circle(surf, val, (int(cc[0]), int(cc[1])), max(1, int(r * k)))
+            elif kind == "gloss":
+                c, r = geo
+                cc = T(c)
+                # sin escalón de altura (un disco alzado proyecta sombra) y con el brillo en degradado, no en moneda
+                for j in range(6):
+                    f_ = 1.0 - j / 6.0
+                    _D.circle(surf, (h0, pid, int(spec * (0.22 + 0.78 * (1.0 - f_) ** 0.7))), (int(cc[0]), int(cc[1])),
+                              max(1, int(r * k * f_)))
     return pieces
 
 
@@ -913,9 +931,30 @@ def _face_points(look):
     return pts + arc
 
 
+# Expresiones: apertura del párpado superior, subida del inferior, cejas (dentro: junto a la nariz; fuera: sien;
+# positivo baja), surco nasogeniano y boca.
+EXPR = {
+    "neutra":   dict(lid=1.0, low=0.0, brow_in=0.0, brow_out=0.0, fold=False, mouth="line"),
+    "foco":     dict(lid=0.86, low=0.18, brow_in=0.045, brow_out=-0.01, fold=False, mouth="firm"),
+    "feroz":    dict(lid=0.84, low=0.22, brow_in=0.075, brow_out=-0.03, fold=False, mouth="firm"),
+    "calma":    dict(lid=0.72, low=0.1, brow_in=0.0, brow_out=0.01, fold=False, mouth="line"),
+    "sonrisa":  dict(lid=0.84, low=0.38, brow_in=-0.02, brow_out=0.0, fold=True, mouth="smile"),
+    "picara":   dict(lid=0.78, low=0.3, brow_in=0.025, brow_out=-0.045, fold=True, mouth="smirk"),
+    "grito":    dict(lid=1.18, low=0.0, brow_in=0.09, brow_out=-0.045, fold=True, mouth="shout"),
+    "esfuerzo": dict(lid=0.62, low=0.38, brow_in=0.08, brow_out=-0.02, fold=True, mouth="teeth"),
+    "dolor":    dict(lid=0.0, low=0.0, brow_in=-0.07, brow_out=0.025, fold=True, mouth="grimace"),
+    "jadeo":    dict(lid=0.6, low=0.0, brow_in=-0.03, brow_out=0.02, fold=False, mouth="open"),
+    "ko":       dict(lid=0.0, low=0.0, brow_in=-0.02, brow_out=0.02, fold=False, mouth="slack"),
+}
+BASE_EXPR = {"contenida": "foco", "seria": "foco", "concentrada": "foco", "feroz": "feroz", "calma": "calma",
+             "serena": "calma", "sonrisa": "sonrisa", "picara": "picara"}
+
+
 def _expression(f, look):
     st = f.state
-    if st in (Fighter.HIT, Fighter.KNOCK, Fighter.STUN, Fighter.THROWN, Fighter.KO):
+    if st == Fighter.KO:
+        return "ko"
+    if st in (Fighter.HIT, Fighter.KNOCK, Fighter.STUN, Fighter.THROWN):
         return ("sonrisa" if look is LOOKS.get("matias") and st == Fighter.HIT else "dolor")
     if st == Fighter.KIAI or (st == Fighter.ATTACK and f.move is not None and f.move_key in ("heavy", "special")):
         return "grito"
@@ -925,8 +964,7 @@ def _expression(f, look):
         return "sonrisa"
     if getattr(f, "exhausted", False):
         return "jadeo"
-    e = look["expression"]
-    return "sonrisa" if e in ("sonrisa", "picara") else "neutra"
+    return BASE_EXPR.get(look["expression"], "neutra")
 
 
 _LEGS: Dict[str, Tuple[float, float]] = {}
@@ -1170,16 +1208,14 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.poly(g, pts, col, sheen=sheen, smooth=2)
             yokes[sh] = (pts, col, mat, sheen, pat)
 
-    def shoulder_patch(g, sh):
-        """Sobre la raíz del brazo: el canesú otra vez, encogido y sin contorno. Tapa la costura interior y el
-        remate redondo de la manga (o del deltoides) sin tocar la silueta, que sigue entintando el canesú."""
+    def shoulder_patch(g, sh, cap):
+        """Sobre la raíz del brazo: un disco del color del canesú, sin contorno, en el remate redondo de la manga
+        (o del deltoides). Tapa la costura interior sin tocar la silueta ni, al echar la cabeza atrás, el cuello."""
         if sh not in yokes:
             return
         pts, col, mat, sheen, pat = yokes[sh]
-        cx = sum(q[0] for q in pts) / len(pts)
-        cy = sum(q[1] for q in pts) / len(pts)
         fig.m(mat, pat=pat)
-        fig.poly(g, [(cx + (q[0] - cx) * 0.78, cy + (q[1] - cy) * 0.78) for q in pts], col, outline=False, sheen=sheen, smooth=2)
+        fig.circle(g, _lerp2(cap, sh, 0.35), B["delt"] * 0.95, col, outline=False, sheen=sheen)
 
     # ── piernas ──────────────────────────────────────────────────────────────
     bottom = lk["bottom"]
@@ -1673,79 +1709,146 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     else:
         head_pts = [HP(x, y) for x, y in _face_points(lk)]
     fig.poly(5, head_pts, face_c, sheen=0.4 + skin_sheen * 0.5)
-    # oreja
-    ear_c = shade(face_c, 0.92)
-    ear = [HP(-0.12 + 0.17 * math.cos(a), 0.06 + 0.27 * math.sin(a)) for a in [i * math.pi / 6 for i in range(12)]]
+    # zonas de brillo de la cara: frente, puente y punta de la nariz, pómulo (más con el sudor)
+    gl = 2.6 + 2.0 * sweat
+    for (gx, gy), gr in (((0.52, -0.56), 0.2), ((0.86, -0.02), 0.07), ((1.02, 0.2), 0.07), ((0.62, 0.12), 0.12)):
+        fig.gloss(5, HP(gx, gy), gr * R, gl)
+    # oreja: más pequeña y más cálida, con hélice, concha y trago
+    ear_c = mixc(shade(face_c, 0.93), (200, 92, 80), 0.12)
+    ecx, ecy, erx, ery = -0.1, 0.07, 0.145, 0.235
+    ear = [HP(ecx + erx * math.cos(a) * (1.0 - 0.18 * max(0.0, math.sin(a))), ecy + ery * math.sin(a))
+           for a in [i * math.pi / 8 for i in range(16)]]
+    fig.m("skin")
     if "coliflor" in ex:
         fig.poly(5, ear, mixc(ear_c, (190, 110, 100), 0.25), outline=False, sheen=0.3)
-        for dx, dy in ((-0.1, -0.08), (-0.05, 0.1), (-0.16, 0.12)):
-            fig.dot(5, HP(dx, dy), 0.09 * R, shade(ear_c, 1.08))
+        for dx, dy in ((-0.1, -0.06), (-0.05, 0.1), (-0.15, 0.13)):
+            fig.dot(5, HP(dx, dy), 0.085 * R, shade(ear_c, 1.08))
     else:
         fig.poly(5, ear, ear_c, outline=False, sheen=0.3)
-        fig.line(5, [HP(-0.08, -0.08), HP(-0.18, 0.04), HP(-0.1, 0.2)], shade(ear_c, 0.7), 0.06 * R)
+    fig.line(5, [HP(-0.03, -0.1), HP(-0.15, -0.07), HP(-0.2, 0.06), HP(-0.15, 0.2), HP(-0.07, 0.26)], shade(ear_c, 0.72), 0.03 * R)
+    fig.dot(5, HP(-0.09, 0.08), 0.055 * R, shade(ear_c, 0.8))                      # concha
+    fig.dot(5, HP(0.0, 0.08), 0.035 * R, shade(ear_c, 1.04))                       # trago
 
-    fig.m("eye")
+    # ── expresión: cejas, párpados y boca coherentes ─────────────────────────
     expr = _expression(f, lk)
+    E = EXPR.get(expr, EXPR["neutra"])
+    lid, low = E["lid"], E["low"]
+    if hitk > 0.3:
+        lid, low = 0.0, 0.0
     dark = (22, 14, 12)
     iris = hex2rgb(lk.get("eyes", "#3A2618"))
+    fem = lk["body"] in ("atleta_f", "menuda")
     # parpadeo: cada 3-5 s, unos 7 fotogramas, desfasado por luchador
     ph_ = (t_anim * 0.27 + (sum(map(ord, fd["id"])) % 17) / 17.0) % 1.0
-    blink = expr not in ("dolor", "grito") and ph_ < 0.03
+    if expr not in ("dolor", "grito", "ko") and ph_ < 0.03:
+        lid = 0.0
     # mirada: hacia el rival (un poco arriba o abajo si salta o se agacha)
     lx_, ly_ = getattr(f, "look_at", (100.0, 0.0))
     gaze = 0.0 if lx_ * fac >= 0 else -0.35            # con el rival a la espalda, los ojos se van atrás
     gaze_y = clamp(-ly_ / max(80.0, abs(lx_) + 40.0), -0.05, 0.05)
-    # ojo: párpado superior entintado y grueso, iris con brillo, línea inferior fina
-    if blink:
-        fig.line(5, [HP(0.46, -0.1), HP(0.6, -0.06), HP(0.76, -0.1)], dark, 0.06 * R)
-        fig.line(5, [HP(0.47, -0.14), HP(0.6, -0.16), HP(0.73, -0.13)], shade(face_c, 0.8), 0.025 * R)
-    elif expr == "dolor":
-        fig.line(5, [HP(0.46, -0.12), HP(0.6, -0.08), HP(0.74, -0.12)], dark, 0.06 * R)
-        fig.line(5, [HP(0.5, -0.04), HP(0.62, -0.02), HP(0.72, -0.05)], shade(face_c, 0.7), 0.03 * R)
+    fig.m("eye")
+    ey = -0.105
+    apex_y = ey - 0.088 * lid
+    low_y = ey + 0.052 - 0.032 * low
+    if lid < 0.12:
+        # cerrado: la línea de las pestañas se curva hacia abajo (apretada en el dolor)
+        sq = 0.03 if expr == "dolor" or hitk > 0.3 else 0.0
+        fig.line(5, [HP(0.46, ey + 0.005), HP(0.6, ey + 0.035 + sq), HP(0.76, ey + 0.0)], dark, 0.065 * R)
+        fig.line(5, [HP(0.48, ey - 0.04 - sq), HP(0.61, ey - 0.06 - sq), HP(0.73, ey - 0.035)], shade(face_c, 0.78), 0.025 * R)
     else:
-        open_ = 1.15 if expr == "grito" else 1.0
-        eye = [HP(0.47, -0.11), HP(0.58, -0.18 * open_), HP(0.72, -0.13), HP(0.75, -0.08), HP(0.6, -0.04)]
-        fig.poly(5, eye, (236, 232, 222), outline=False, shade_=False, smooth=1)
-        gy = -0.1 - gaze_y
-        fig.dot(5, HP(0.65 + gaze * 0.2, gy), 0.068 * R, iris)
-        fig.dot(5, HP(0.665 + gaze * 0.2, gy), 0.036 * R, dark)
-        fig.dot(5, HP(0.635 + gaze * 0.2, gy - 0.025), 0.02 * R, (255, 255, 250))
-        fig.line(5, [HP(0.45, -0.1), HP(0.57, -0.19 * open_), HP(0.7, -0.15), HP(0.79, -0.1)], dark, 0.075 * R)
-        fig.line(5, [HP(0.52, -0.04), HP(0.64, -0.025), HP(0.73, -0.06)], shade(face_c, 0.72), 0.022 * R)
-    # ceja de pincel
+        white = [HP(0.46, ey), HP(0.585, apex_y), HP(0.71, ey - 0.06 * lid), HP(0.765, ey + 0.018), HP(0.64, low_y), HP(0.52, ey + 0.035)]
+        fig.poly(5, white, (230, 223, 212), outline=False, shade_=False, smooth=1)
+        gx, gy = 0.668 + gaze * 0.2, ey - gaze_y + 0.004
+        fig.dot(5, HP(gx, gy), 0.08 * R, shade(iris, 0.6))                          # borde del iris
+        fig.dot(5, HP(gx, gy), 0.066 * R, iris)
+        fig.dot(5, HP(gx + 0.004, gy + 0.03), 0.034 * R, mixc(iris, (235, 220, 190), 0.35))   # luz de abajo del iris
+        fig.dot(5, HP(gx + 0.012, gy), 0.036 * R, dark)                              # pupila
+        fig.dot(5, HP(gx - 0.022, gy - 0.032), 0.024 * R, (255, 255, 250))          # brillo húmedo
+        fig.dot(5, HP(gx + 0.03, gy + 0.03), 0.011 * R, (255, 250, 240))
+        if lid < 0.98:
+            # el párpado cubre lo que el ojo no abre: piel desde la línea hasta la ceja
+            fig.m("skin")
+            fig.poly(5, [HP(0.45, ey - 0.002), HP(0.585, apex_y), HP(0.72, ey - 0.058 * lid), HP(0.78, ey + 0.012),
+                         HP(0.8, ey - 0.16), HP(0.44, ey - 0.16)], face_c, outline=False, smooth=1)
+            fig.m("eye")
+        if low > 0.05:
+            fig.m("skin")
+            fig.poly(5, [HP(0.5, ey + 0.06), HP(0.64, low_y), HP(0.77, ey + 0.02), HP(0.76, ey + 0.09), HP(0.52, ey + 0.1)],
+                     face_c, outline=False, smooth=1)
+            fig.m("eye")
+        # sombra del párpado sobre el blanco, línea del párpado (con ala y pestañas en ellas), pliegue y bajo
+        fig.line(5, [HP(0.49, ey - 0.005), HP(0.585, apex_y + 0.022), HP(0.7, ey - 0.042 * lid)], (176, 164, 154), 0.03 * R)
+        fig.line(5, [HP(0.445, ey + 0.004), HP(0.585, apex_y - 0.004), HP(0.71, ey - 0.062 * lid), HP(0.8, ey + 0.004)], dark,
+                 (0.085 if fem else 0.072) * R)
+        if fem:
+            fig.line(5, [HP(0.76, ey - 0.01), HP(0.83, ey - 0.05)], dark, 0.035 * R)
+            fig.line(5, [HP(0.71, ey - 0.045 * lid), HP(0.76, ey - 0.09 * lid - 0.02)], dark, 0.025 * R)
+        fig.line(5, [HP(0.5, apex_y - 0.04), HP(0.61, apex_y - 0.06), HP(0.71, ey - 0.09 * lid - 0.02)], shade(face_c, 0.8), 0.02 * R)
+        fig.line(5, [HP(0.53, low_y + 0.005), HP(0.64, low_y + 0.01), HP(0.74, ey + 0.035)], shade(face_c, 0.74), 0.02 * R)
+    # ceja de pincel: gruesa junto a la nariz, se afila hacia la sien
     fig.m("hair")
-    bw = 0.075 * R * lk["brow"]
-    if expr in ("grito", "esfuerzo") or lk["expression"] == "feroz":
-        brow = [HP(0.4, -0.33), HP(0.6, -0.3), HP(0.8, -0.2)]
-    elif expr == "dolor":
-        brow = [HP(0.4, -0.27), HP(0.62, -0.35), HP(0.8, -0.31)]
-    else:
-        brow = [HP(0.4, -0.3), HP(0.62, -0.35), HP(0.82, -0.28)]
-    fig.line(5, brow, shade(hair_c, 0.85) if hair not in ("mono",) else (205, 205, 200), bw)
-    # nariz: aleta y sombra bajo la punta
+    bw = 0.105 * R * lk["brow"]
+    bi, bo = E["brow_in"], E["brow_out"]
+    brow_c = shade(hair_c, 0.85) if hair not in ("mono",) else (205, 205, 200)
+    fig.poly(5, lock_pts(HP(0.83, -0.28 + bi), HP(0.63, -0.355 + (bi + bo) * 0.4), HP(0.4, -0.3 + bo), bw), brow_c,
+             outline=False, smooth=0)
+    # nariz: aleta, orificio y sombra bajo la punta
     fig.m("skin", True)
-    fig.line(5, [HP(0.86, 0.22), HP(0.93, 0.29), HP(1.0, 0.28)], shade(face_c, 0.68), 0.035 * R)
-    fig.line(5, [HP(0.83, -0.02), HP(0.9, 0.12)], shade(face_c, 0.82), 0.025 * R)
-    # pómulo y rubor
+    fig.line(5, [HP(0.85, 0.215), HP(0.92, 0.29), HP(0.99, 0.285)], shade(face_c, 0.66), 0.035 * R)
+    fig.line(5, [HP(0.83, -0.02), HP(0.9, 0.12)], shade(face_c, 0.84), 0.025 * R)
     fig.m("skin")
-    fig.dot(5, HP(0.55, 0.2), 0.15 * R, mixc(face_c, (215, 110, 100), 0.16 + 0.3 * getattr(f, "breath", 0.0)))
+    fig.dot(5, HP(0.95, 0.27), 0.03 * R, shade(face_c, 0.55))
+    # definición: pómulo y ángulo de la mandíbula; surco nasogeniano al sonreír, gritar o con la edad
+    # (líneas de color, no surcos: un surco en la mejilla se lee como cicatriz)
+    if lk["jaw"] >= 1.05 or lk["body"] in ("atleta", "fibroso", "pesado", "anciano"):
+        fig.line(5, [HP(0.64, 0.22), HP(0.5, 0.34), HP(0.36, 0.52)], shade(face_c, 0.94), 0.03 * R)
+    if E["fold"] or "arrugas" in ex:
+        fig.line(5, [HP(0.86, 0.3), HP(0.81, 0.38), HP(0.76, 0.47)], shade(face_c, 0.86), 0.02 * R)
+    fig.m("skin")
+    if "rubor" in ex or red > 0.05:
+        fig.dot(5, HP(0.58, 0.2), 0.13 * R, mixc(face_c, (215, 110, 100), 0.1 + 0.25 * red))
     # boca
-    lip = shade(face_c, 0.6)
-    if expr in ("grito", "dolor", "jadeo"):
-        o = 0.13 if expr == "grito" else 0.07
-        mouth = [HP(0.71, 0.46), HP(0.92, 0.44), HP(0.9, 0.5 + o), HP(0.8, 0.54 + o), HP(0.73, 0.52 + o * 0.8)]
-        fig.poly(5, mouth, (72, 26, 26), outline=False, shade_=False, smooth=1)
-        if expr == "grito":
-            fig.line(5, [HP(0.74, 0.47), HP(0.9, 0.45)], (238, 232, 222), 0.035 * R, taper=False)
-            fig.dot(5, HP(0.8, 0.52 + o), 0.04 * R, (150, 60, 60))
-    elif expr == "sonrisa":
-        fig.line(5, [HP(0.64, 0.42), HP(0.76, 0.5), HP(0.93, 0.47)], lip, 0.05 * R)
-        fig.dot(5, HP(0.82, 0.55), 0.03 * R, shade(face_c, 1.08))
+    lip_c = mixc(face_c, (176, 72, 72), 0.3)
+    line_c = shade(face_c, 0.52)
+    m = E["mouth"]
+    if m in ("shout", "grimace", "open", "slack"):
+        if m == "shout":
+            pts = [(0.7, 0.44), (0.935, 0.42), (0.925, 0.6), (0.81, 0.69), (0.72, 0.6)]
+        elif m == "grimace":
+            pts = [(0.68, 0.47), (0.925, 0.43), (0.91, 0.53), (0.72, 0.57)]
+        elif m == "open":
+            pts = [(0.74, 0.465), (0.91, 0.455), (0.9, 0.56), (0.8, 0.6), (0.75, 0.55)]
+        else:
+            pts = [(0.75, 0.48), (0.9, 0.475), (0.88, 0.57), (0.79, 0.6)]
+        fig.poly(5, [HP(x, y) for x, y in pts], (62, 22, 24), outline=False, shade_=False, smooth=1)
+        if m in ("shout", "grimace"):
+            fig.poly(5, [HP(0.73, 0.448), HP(0.92, 0.43), HP(0.915, 0.475), HP(0.74, 0.49)], (232, 226, 214), outline=False, shade_=False)
+        if m in ("shout", "open"):
+            fig.dot(5, HP(0.81, 0.62 if m == "shout" else 0.55), 0.06 * R, (150, 62, 62))
+        fig.line(5, [HP(x, y) for x, y in pts[2:]] if m != "slack" else [HP(0.79, 0.62), HP(0.88, 0.6)], lip_c, 0.05 * R)
+    elif m == "teeth":
+        fig.poly(5, [HP(0.71, 0.465), HP(0.93, 0.452), HP(0.92, 0.52), HP(0.72, 0.53)], (226, 220, 208), outline=False, shade_=False)
+        fig.line(5, [HP(0.71, 0.492), HP(0.925, 0.484)], (120, 100, 92), 0.015 * R)
+        for x in (0.77, 0.83, 0.88):
+            fig.line(5, [HP(x, 0.46), HP(x, 0.525)], (150, 132, 122), 0.012 * R)
+        fig.line(5, [HP(0.7, 0.462), HP(0.935, 0.448)], line_c, 0.035 * R)
+        fig.line(5, [HP(0.72, 0.535), HP(0.92, 0.525)], lip_c, 0.04 * R)
     else:
-        fig.line(5, [HP(0.68, 0.49), HP(0.8, 0.5), HP(0.93, 0.47)], lip, 0.045 * R)
-        fig.dot(5, HP(0.82, 0.56), 0.03 * R, shade(face_c, 1.08))
-    # pelo
+        corner = {"line": (0.7, 0.49), "firm": (0.705, 0.505), "smile": (0.665, 0.43), "smirk": (0.68, 0.45)}.get(m, (0.7, 0.49))
+        fig.poly(5, [HP(0.75, 0.505), HP(0.905, 0.49), HP(0.885, 0.545 if m != "firm" else 0.53), HP(0.8, 0.56 if m != "firm" else 0.545)],
+                 lip_c, outline=False, smooth=1)
+        fig.line(5, [HP(*corner), HP(0.8, 0.5 if m != "smile" else 0.49), HP(0.935, 0.474)], line_c, 0.042 * R)
+        fig.dot(5, HP(0.82, 0.59), 0.03 * R, shade(face_c, 0.88))                  # sombra bajo el labio
+        if m == "smile":
+            fig.m("skin", True)
+            fig.line(5, [HP(0.8, 0.3), HP(0.7, 0.36), HP(0.655, 0.44)], shade(face_c, 0.78), 0.03 * R)
+            fig.m("skin")
+        if m == "smirk":
+            fig.dot(5, HP(0.665, 0.43), 0.02 * R, shade(face_c, 0.72))
+
+    # ── pelo: una base más oscura y mechones encima, cada uno con su eje ──────
     fig.m("hair")
+
     def arc(r, a0, a1, step=10):
         out = []
         a = a0
@@ -1755,29 +1858,84 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             a += st
         return out
 
+    def polar(r, a_deg, dx=0.0, dy=0.0):
+        a = math.radians(a_deg)
+        return HP(-0.08 + r * math.cos(a) + dx, -0.05 + r * math.sin(a) + dy)
+
+    lock_i = [0]
+
+    def strand(base, ctrl, tip, w, sheen=1.4):
+        """Un mechón: ancho en la raíz, curvo, afilado; cada uno con un tono algo distinto para que se lean."""
+        k_ = (0.94, 1.06, 0.99, 1.1, 0.96)[lock_i[0] % 5]
+        lock_i[0] += 1
+        fig.poly(5, lock_pts(base, ctrl, tip, w * R), shade(hair_c, k_), sheen=sheen, smooth=0)
+
+    base_c = shade(hair_c, 0.8)
     cap_inner = [HP(-0.66, 0.36), HP(-0.5, 0.08), HP(-0.22, -0.3), HP(0.12, -0.6), HP(0.42, -0.76)]
-    if hair in ("corto", "trenza", "coleta", "trenza_nuca", "rastas", "chonmage"):
-        r_ = {"corto": 1.08, "trenza": 1.05, "coleta": 1.05, "trenza_nuca": 1.06, "rastas": 1.1, "chonmage": 1.05}[hair]
-        fig.poly(5, arc(r_, -62, -212) + cap_inner, hair_c, sheen=2.4 if hair == "chonmage" else 1.0, edge=True)
+    swing = sw_h * 0.6
+    if hair in ("corto", "trenza", "coleta", "trenza_nuca", "rastas", "chonmage", "mono"):
+        r_ = {"corto": 1.06, "trenza": 1.04, "coleta": 1.04, "trenza_nuca": 1.05, "rastas": 1.08, "chonmage": 1.04, "mono": 1.04}[hair]
+        a0 = -98 if hair == "mono" else -62
+        fig.poly(5, arc(r_, a0, -212) + cap_inner, base_c, sheen=0.8, edge=True)
     elif hair == "rapado":
         fig.poly(5, arc(1.02, -62, -212) + cap_inner, mixc(face_c, hair_c, 0.45), outline=False, sheen=0.3)
+        fig.m("hair", True)
+        for a in range(-70, -205, -18):                                         # nacimiento del pelo rapado
+            fig.dot(5, polar(0.9, a), 0.05 * R, shade(hair_c, 0.9))
+        fig.m("hair")
     elif hair == "melena":
         pts = [HP(0.8, -0.34), HP(0.74, -0.86)] + arc(1.13, -55, -195) + [HP(-1.08, 0.8), HP(-0.42, 0.88), HP(-0.3, 0.32), HP(0.1, -0.06), HP(0.46, -0.3)]
-        fig.poly(5, pts, hair_c, sheen=1.6, edge=True)
-        fig.line(5, [HP(0.78, -0.35), HP(0.46, -0.32)], shade(hair_c, 1.4), 0.04 * R)
+        fig.poly(5, pts, base_c, sheen=1.2, edge=True)
     elif hair == "rizado":
-        fig.poly(5, arc(1.04, -62, -212) + cap_inner, hair_c, sheen=0.8, edge=True)
-        for a in range(-66, -220, -22):
-            q = HP(-0.08 + 1.02 * math.cos(math.radians(a)), -0.05 + 1.02 * math.sin(math.radians(a)))
-            fig.circle(5, q, 0.24 * R, hair_c, sheen=0.9)
-    elif hair == "mono":
-        fig.poly(5, arc(1.05, -98, -212) + [HP(-0.66, 0.36), HP(-0.5, 0.08), HP(-0.3, -0.42), HP(-0.06, -0.86)], hair_c, sheen=0.8, edge=True)
-        fig.circle(5, HP(-0.82, -0.8), 0.3 * R, hair_c, sheen=1.0)
-        fig.line(5, [HP(-0.66, -0.66), HP(-0.6, -0.98)], shade(hair_c, 0.7), 0.05 * R)
+        fig.poly(5, arc(1.04, -62, -212) + cap_inner, base_c, sheen=0.6, edge=True)
+
+    if hair == "corto":
+        # mechones cortos que salen de la coronilla: los de delante caen hacia la frente, los de atrás a la nuca
+        for i, a in enumerate(range(-46, -205, -16)):
+            front_ = a > -95
+            bend = 16 if front_ else -15
+            ln = 1.12 + 0.08 * ((i * 5) % 3) / 2
+            strand(polar(0.5, a), polar(0.92, a + bend * 0.5), polar(ln, a + bend, dx=-swing * (0 if front_ else 1)), 0.4)
+        strand(HP(0.18, -0.9), HP(0.55, -0.88), HP(0.74, -0.6 + 0.04), 0.3)                       # flequillo
+        strand(HP(0.05, -0.95), HP(0.35, -0.92), HP(0.5, -0.7), 0.24)
+    elif hair in ("trenza", "trenza_nuca", "coleta", "chonmage", "mono"):
+        # recogido: mechones largos desde el nacimiento del pelo, por encima del cráneo, hacia el moño o la coleta
+        tie = {"coleta": (-0.78, -0.72), "trenza": (-0.9, -0.15), "trenza_nuca": (-0.95, 0.2), "chonmage": (-0.4, -1.0),
+               "mono": (-0.82, -0.8)}[hair]
+        for i, a in enumerate((-58, -72, -86, -100, -114, -128)):
+            b_ = polar(1.0, a)
+            mid = polar(1.06, (a + math.degrees(math.atan2(tie[1] + 0.05, tie[0] + 0.08))) * 0.5)
+            strand(b_, mid, HP(tie[0] + 0.05 * (i % 2), tie[1] + 0.03 * i), 0.26, sheen=1.8)
+        # mechones sueltos en la sien y el flequillo
+        if hair != "chonmage" and hair != "mono":
+            strand(HP(0.38, -0.86), HP(0.62, -0.7), HP(0.64, -0.42), 0.2)
+            strand(HP(0.1, -0.8), HP(0.18, -0.4), HP(0.12 - sw_h, -0.02), 0.14)
+    elif hair == "melena":
+        for i, a in enumerate(range(-60, -200, -20)):
+            b_ = polar(0.55, a)
+            tip_ = polar(1.12, a)
+            strand(b_, polar(1.05, a), (tip_[0], tip_[1] + 0.35 * R), 0.42)            # la melena cae por su peso
+        for x0, x1 in ((-1.02, -1.08), (-0.82, -0.86), (-0.6, -0.62)):
+            strand(HP(x0, 0.5), HP(x0 - 0.02, 0.7), HP(x1 - sw_h * 0.4, 0.98), 0.24)
+        for x0 in (0.42, 0.56, 0.68):                                                     # flequillo
+            strand(HP(x0 - 0.1, -0.92), HP(x0 + 0.06, -0.62), HP(x0 + 0.1, -0.36), 0.18)
+    elif hair == "rizado":
+        for ring, rad, n in ((1.02, 0.24, 8), (0.8, 0.2, 6)):
+            for i, a in enumerate(range(-66, -220, -int(154 / n))):
+                fig.circle(5, polar(ring, a), rad * R * (0.85 + 0.3 * ((i * 7) % 3) / 2), shade(hair_c, (0.92, 1.08, 1.0)[i % 3]), sheen=0.9)
+        fig.m("hair", True)
+        for i, a in enumerate(range(-70, -220, -30)):                                    # rizo: espiral de cada bucle
+            c_ = polar(1.02, a)
+            fig.line(5, [(c_[0] + math.cos(t) * 0.12 * R * (1 - t / 9), c_[1] + math.sin(t) * 0.12 * R * (1 - t / 9))
+                         for t in [k * 0.9 for k in range(7)]], shade(hair_c, 0.7), 0.03 * R)
+        fig.m("hair")
     if hair == "chonmage":
         tk = [HP(-0.45, -1.02), HP(-0.1, -1.32), HP(0.42, -1.28), HP(0.5, -1.12), HP(0.05, -1.08)]
         fig.poly(5, tk, hair_c, sheen=3.0, edge=True)
         fig.line(5, [HP(-0.32, -1.02), HP(-0.18, -1.2)], (220, 220, 215), 0.06 * R)
+    if hair == "mono":
+        fig.circle(5, HP(-0.82, -0.8), 0.3 * R, hair_c, sheen=1.2)
+        fig.line(5, [HP(-0.66, -0.66), HP(-0.6, -0.98)], shade(hair_c, 0.7), 0.05 * R)
     if hair == "coleta":
         fig.circle(5, HP(-0.78, -0.72), 0.14 * R, C("#1B1B1B", Hd[0]), sheen=0.6)
     if hair == "trenza_nuca":
@@ -1789,39 +1947,13 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         for i in range(3):
             fig.circle(5, HP(-0.95 - 0.06 * i - sw_h * 0.3, 0.35 + 0.25 * i), (0.17 - 0.03 * i) * R, hair_c, sheen=1.4)
     if hair == "rastas":
-        for i, a in enumerate(range(-80, -235, -17)):
-            base = HP(-0.08 + 0.98 * math.cos(math.radians(a)), -0.05 + 0.98 * math.sin(math.radians(a)))
-            dx, dy = math.cos(math.radians(a)), math.sin(math.radians(a))
-            ln = 0.55 + 0.25 * ((i * 7) % 3) / 2
-            tip = HP(-0.08 + (0.98 + ln) * dx - sw_h * (1 + i * 0.1), -0.05 + (0.98 + ln) * dy + 0.45)
-            fig.tube(5, base, tip, 0.13 * R, 0.1 * R, hair_c, sheen=0.9)
-    # mechones: el pelo deja de ser un casco y tiene forma
-    fig.m("hair")
-
-    def lock(a_deg, r0, length, bend, w, down=0.0):
-        a = math.radians(a_deg)
-        b = math.radians(a_deg + bend)
-        base = HP(-0.08 + r0 * math.cos(a), -0.05 + r0 * math.sin(a))
-        ctrl = HP(-0.08 + (r0 + length * 0.55) * math.cos((a + b) * 0.5), -0.05 + (r0 + length * 0.55) * math.sin((a + b) * 0.5) + down * 0.5)
-        tip = HP(-0.08 + (r0 + length) * math.cos(b) - sw_h * 0.6, -0.05 + (r0 + length) * math.sin(b) + down)
-        fig.poly(5, lock_pts(base, ctrl, tip, w * R), hair_c, sheen=1.2, smooth=0)
-
-    if hair == "corto":
-        for a_deg, ln, bend in ((-78, 0.32, -22), (-100, 0.36, -24), (-124, 0.34, -26), (-150, 0.3, -24), (-176, 0.26, -20)):
-            lock(a_deg, 0.98, ln, bend, 0.42)
-        fig.poly(5, lock_pts(HP(0.3, -0.92), HP(0.58, -0.86), HP(0.72, -0.64), 0.32 * R), hair_c, sheen=1.2, smooth=0)
-    elif hair in ("trenza", "trenza_nuca", "coleta"):
-        # mechones sueltos en la sien y el flequillo
-        fig.poly(5, lock_pts(HP(0.38, -0.86), HP(0.62, -0.7), HP(0.64, -0.42), 0.2 * R), hair_c, sheen=1.2, smooth=0)
-        fig.poly(5, lock_pts(HP(0.1, -0.8), HP(0.18, -0.4), HP(0.12 - sw_h, -0.02), 0.14 * R), hair_c, sheen=1.2, smooth=0)
-    elif hair == "melena":
-        for x0, x1 in ((-1.02, -1.08), (-0.82, -0.86), (-0.6, -0.62)):
-            fig.poly(5, lock_pts(HP(x0, 0.5), HP(x0 - 0.02, 0.7), HP(x1 - sw_h * 0.4, 0.98), 0.24 * R), hair_c, sheen=1.4, smooth=0)
-        for x0 in (0.5, 0.64):
-            fig.poly(5, lock_pts(HP(x0, -0.8), HP(x0 + 0.08, -0.55), HP(x0 + 0.1, -0.34), 0.16 * R), hair_c, sheen=1.4, smooth=0)
-    elif hair == "mono":
-        for a_deg in (-120, -150, -178):
-            lock(a_deg, 1.0, 0.18, -14, 0.22)
+        for layer, (r0, lw_) in enumerate(((0.92, 0.12), (0.98, 0.13))):
+            for i, a in enumerate(range(-80 - layer * 8, -235, -17)):
+                base = polar(r0, a)
+                dx, dy = math.cos(math.radians(a)), math.sin(math.radians(a))
+                ln = 0.55 + 0.25 * ((i * 7 + layer) % 3) / 2
+                tip = HP(-0.08 + (r0 + ln) * dx - sw_h * (1 + i * 0.1), -0.05 + (r0 + ln) * dy + 0.45)
+                fig.tube(5, base, tip, lw_ * R, lw_ * 0.8 * R, shade(hair_c, (0.9, 1.05)[(i + layer) % 2]), sheen=0.9)
     if hair not in ("rapado",):
         # banda de brillo del pelo (en la GPU la pone la luz; en CPU se pinta)
         fig.m("hair", True)
@@ -1970,7 +2102,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             kl_, kr_ = bend_sides(sh, el, hd, inner, outer)
             fig.ribbon(g, [cap, sh, el, cut], kl_, kr_, slc, sheen=0.5, edge=True)
             if side == "r":
-                shoulder_patch(g, J["sh_r"])
+                shoulder_patch(g, J["sh_r"], cap)
             # puño de la manga: refuerzo con pespuntes
             fig.m("cloth", pat="stitch")
             c0 = _lerp2(el, cut, 0.84)
@@ -2008,7 +2140,8 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.ribbon(g, [cap, sh, dtip], [(0, B["delt"] * 0.6), (0.35, B["delt"] * 0.92), (1, up0 * 0.55)],
                        [(0, B["delt"] * 0.55), (0.35, B["delt"] * 0.85), (1, up0 * 0.5)], arm_c, sheen=skin_sheen)
             if side == "r" and top == "none":
-                shoulder_patch(g, J["sh_r"])
+                shoulder_patch(g, J["sh_r"], cap)
+            fig.gloss(g, _lerp2(cap, sh, 0.7), B["delt"] * 0.45, 2.4 + 2.0 * sweat)       # brillo del hombro
             fig.m("skin", True)
             cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])
             nx_, ny_ = _norm(-(el[1] - sh[1]), el[0] - sh[0])
@@ -2121,6 +2254,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.line(g, [H_(1.2, -2.3), H_(4.4, -1.2), H_(6.4, 0.6)], crease, 0.16 * hs)
             fig.m("skin", True)
             fig.line(g, [H_(8.6, -3.0), H_(8.9, 0.0), H_(8.4, 3.0)], shade(fore_sk, 0.8), 0.35 * hs)            # nudillos
+            fig.gloss(g, H_(8.2, -0.5), 1.4 * hs, 2.8 + 2.0 * sweat)
         if "manchas" in ex:
             fig.dot(g, (hd[0] - 1, hd[1] - 1), 0.5, shade(fore_sk, 0.8))
     return fig
