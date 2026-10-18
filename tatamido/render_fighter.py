@@ -881,6 +881,71 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         front = [(0.0, r0), (uk * 0.6, (r0 + rk) * 0.5 - 0.3), (uk, rk + 0.4), (1.0, r1)]
         return back, front
 
+    def pant_leg(g, kn, hem, L1, r0, rk, r1, col, mat, sheen, band=False, cuff=False, stack=True):
+        """Pernera que se comporta como tela: se recoge detrás de la rodilla al doblarla, se tensa sobre la
+        rótula y marca líneas de tensión desde la ingle, cuelga por el lado que mira al suelo con la pierna
+        levantada y se apila sobre el tobillo. Con `band`, dobladillo con pespuntes; con `cuff`, puño elástico."""
+        Ls = dist(kn, hem)
+        uk = L1 / max(1e-6, L1 + Ls)
+        t1 = _norm(kn[0] - H[0], kn[1] - H[1])
+        t2 = _norm(hem[0] - kn[0], hem[1] - kn[1])
+        flex = clamp(math.acos(clamp(t1[0] * t2[0] + t1[1] * t2[1], -1.0, 1.0)) / 1.6, 0.0, 1.0)
+        cr = t1[0] * t2[1] - t1[1] * t2[0]
+        s_in = 1.0 if cr >= 0 else -1.0                  # lado de dentro del doblez (la corva): izquierda si cr ≥ 0
+        nl1 = (-t1[1], t1[0])                            # normal izquierda del muslo
+        nl2 = (-t2[1], t2[0])
+        # gravedad: con el muslo tumbado, la tela cuelga hacia el lado que mira al suelo
+        down_l = nl1[1]                                  # > 0: la izquierda mira hacia abajo
+        sag = 2.4 * max(0.0, 1.0 - abs(t1[1]) * 1.4)
+        sag_l, sag_r = (sag, 0.0) if down_l > 0 else (0.0, sag)
+        inner = [(0.0, r0 + 0.4), (uk * 0.55, (r0 + rk) * 0.5 + 0.6), (uk * 0.9, rk + 0.5 + 2.0 * flex),
+                 (uk, rk + 0.4 + 2.4 * flex), (uk + (1 - uk) * 0.14, rk * 0.95 + 1.1 * flex), (0.9, r1 - 0.2), (1.0, r1 + 0.4)]
+        outer = [(0.0, r0), (uk * 0.6, (r0 + rk) * 0.5 - 0.4 - 0.9 * flex), (uk, rk + 0.3 - 0.7 * flex),
+                 (uk + (1 - uk) * 0.3, rk * 0.92), (0.9, r1 - 0.3), (1.0, r1 + 0.3)]
+        if cuff:                                         # chándal: puño elástico que se cierra en el tobillo
+            inner[-1] = (1.0, r1 - 1.0)
+            outer[-1] = (1.0, r1 - 1.0)
+        kl, kr = (inner, outer) if s_in > 0 else (outer, inner)
+        add = lambda ks, extra: [(u, v + extra * clamp(1.0 - abs(u - uk * 0.5) / max(uk * 0.6, 1e-3), 0.0, 1.0)) for u, v in ks]
+        kl, kr = add(kl, sag_l), add(kr, sag_r)
+        fig.m(mat)
+        fig.ribbon(g, [H, kn, hem], kl, kr, col, sheen=sheen, edge=True)
+        if band:
+            # dobladillo: una banda recta que cruza el bajo (no una cinta corta, que se ve como un disco)
+            fig.m(mat, pat="stitch")
+            b0 = _lerp2(kn, hem, 0.9)
+            ra = (r1 - 0.2, r1 - 0.1)                    # (izquierda, derecha) en el arranque de la banda
+            rb = (r1 + 0.4, r1 + 0.3)
+            fig.poly(g, [(b0[0] + nl2[0] * ra[0], b0[1] + nl2[1] * ra[0]), (hem[0] + nl2[0] * rb[0], hem[1] + nl2[1] * rb[0]),
+                         (hem[0] - nl2[0] * rb[1], hem[1] - nl2[1] * rb[1]), (b0[0] - nl2[0] * ra[1], b0[1] - nl2[1] * ra[1])],
+                     shade(col, 0.96), sheen=sheen * 0.8, smooth=0)
+        fig.m(mat, True)
+        dk = shade(col, 0.8)
+        off = lambda p, n, d: (p[0] + n[0] * d, p[1] + n[1] * d)
+        # corva: dos o tres pliegues que nacen del doblez, más largos cuanto más se dobla
+        if flex > 0.12:
+            for i, (u, w_) in enumerate(((0.0, 0.9), (-0.16, 0.7), (0.16, 0.6))):
+                if i == 2 and flex < 0.45:
+                    break
+                c0 = off(_lerp2(H, kn, 1.0 + u * 0.5 - 0.08), nl1, s_in * rk * (0.5 + 0.1 * i))
+                c1 = off(kn, nl2, s_in * rk * (0.85 - 0.1 * i))
+                c2 = off(_lerp2(kn, hem, 0.08 + 0.06 * i + 0.1 * flex), nl2, s_in * rk * (0.55 + 0.1 * i))
+                fig.line(g, [c0, c1, c2], dk, w_)
+        # tensión: de la ingle a la rótula por delante del muslo cuando la pierna se dobla o se levanta
+        lift = max(flex, 1.0 - abs(t1[1]))
+        if lift > 0.3:
+            fig.line(g, [off(_lerp2(H, kn, 0.18), nl1, s_in * r0 * 0.35), off(_lerp2(H, kn, 0.6), nl1, -s_in * rk * 0.15),
+                         off(_lerp2(H, kn, 0.92), nl1, -s_in * rk * 0.55)], shade(col, 0.84), 0.6)
+        # pliegue largo de caída en el muslo de apoyo
+        if lift <= 0.3:
+            fig.line(g, [_lerp2(H, kn, 0.3), _lerp2(H, kn, 0.7)], shade(col, 0.84), 0.45)
+        # la tela se apila sobre el tobillo
+        if stack:
+            for u, w_ in ((0.72, 0.55), (0.84, 0.6)):
+                a_ = off(_lerp2(kn, hem, u), nl2, s_in * r1 * 0.8)
+                b_ = off(_lerp2(kn, hem, u + 0.05), nl2, -s_in * r1 * 0.75)
+                fig.line(g, [a_, _lerp2(a_, b_, 0.5), b_], dk, w_)
+
     # piernas de huesos fijos: el esqueleto de poses estira muslo y pierna a voluntad (de 31 a 66 cm el muslo,
     # de 30 a 70 la pierna: 135 cm de pierna en la patada alta); aquí miden lo que en la guardia de cada uno
     T_, S_ = _leg_lengths(fd)
@@ -938,27 +1003,14 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         # ropa de las piernas
         if bottom == "gi":
             pc = C(lk.get("pants", cloth), x_m, depth)
-            hem = _lerp2(kn, ankle, 0.86)
-            fig.m("cloth")
-            kb, kf = cloth_keys(L1, dist(kn, hem), th0 + 3.2, th1 + 3.5, ca1 + 4.3, bag=0.8)
-            fig.ribbon(g, [H, kn, hem], kb, kf, pc, sheen=0.5, edge=True)
-            fig.m("cloth", True)
-            fig.line(g, [_lerp2(H, kn, 0.8), _lerp2(kn, hem, 0.05), _lerp2(kn, hem, 0.28)], shade(pc, 0.78), 0.5)
-            fig.line(g, [_lerp2(H, kn, 0.55), _lerp2(H, kn, 0.72)], shade(pc, 0.8), 0.4)
-            fig.line(g, [_lerp2(kn, hem, 0.62), _lerp2(kn, hem, 0.9)], shade(pc, 0.8), 0.4)
+            pant_leg(g, kn, _lerp2(kn, ankle, 0.86), L1, th0 + 3.2, th1 + 3.4, ca1 + 4.2, pc, "cloth", 0.5, band=True)
         elif bottom == "abada":
-            pc = C(cloth, x_m, depth)
-            fig.m("cloth")
-            kb, kf = cloth_keys(L1, L2, th0 + 2.4, th1 + 2.8, ca1 + 1.3, bag=0.6)
-            fig.ribbon(g, [H, kn, ankle], kb, kf, pc, sheen=0.5, edge=True)
-            fig.m("cloth", True)
-            fig.line(g, [_lerp2(H, kn, 0.7), _lerp2(kn, ankle, 0.1), _lerp2(kn, ankle, 0.3)], shade(pc, 0.8), 0.45)
+            pant_leg(g, kn, ankle, L1, th0 + 2.4, th1 + 2.6, ca1 + 1.4, C(cloth, x_m, depth), "cloth", 0.5, stack=False)
         elif bottom == "track":
             pc = C(lk["pants"], x_m, depth)
             hem = _lerp2(kn, ankle, 0.94)
+            pant_leg(g, kn, hem, L1, th0 + 2.4, th1 + 2.3, ca1 + 2.5, pc, "satin", 0.8, cuff=True)
             fig.m("satin")
-            kb, kf = cloth_keys(L1, dist(kn, hem), th0 + 2.4, th1 + 2.4, ca1 + 2.6, bag=0.4)
-            fig.ribbon(g, [H, kn, hem], kb, kf, pc, sheen=0.8, edge=True)
             fig.line(g, catmull([H, kn, hem], 3), C("#FFFFFF", x_m, depth), 0.9, taper=False)
         elif bottom == "shorts_sambo":
             fig.m("cloth")
