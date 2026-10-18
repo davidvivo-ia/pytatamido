@@ -284,12 +284,12 @@ float selfShadow(vec2 p, vec3 L, float pxcm) {
     float kg = 0.3 * pxcm;                                  // una unidad de capa ≈ 3 mm
     float h0 = figHeight(p, kg) + 0.6 * pxcm;
     float maxT = 42. * pxcm;
-    float jit = hash12(p * 0.73);
     float occ = 0.;
-    for (int i = 0; i < 12; i++) {
-        float t = maxT * pow((float(i) + jit) / 12., 1.6) + 1.5 * uRS;
+    // pasos fijos (sin ruido: el ruido se veía como un moteado en la piel); la penumbra crece con la distancia
+    for (int i = 1; i <= 16; i++) {
+        float t = maxT * pow(float(i) / 16., 1.7) + 1.5 * uRS;
         float dh = figHeight(p + dir * t, kg) - (h0 + t * rise);
-        occ = max(occ, smoothstep(0., 2.5 * pxcm, dh));
+        occ = max(occ, smoothstep(0., (1.5 + t / pxcm * 0.12) * pxcm, dh));
     }
     return 1. - occ;
 }

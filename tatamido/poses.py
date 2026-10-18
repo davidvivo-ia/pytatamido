@@ -128,12 +128,13 @@ def pose_attack(anim, phase, fd, kick=False):
     ext = smoothstep(phase / 0.4) if phase < 0.4 else (1 - smoothstep((phase - 0.5) / 0.5)) if phase > 0.5 else 1.0
     lean = 10 * ext
     p = _attack_shape(anim, base, ext, lean, fd, kick)
-    # las animaciones están escritas sobre la guardia estándar: al principio y al final del golpe
-    # se funden con la guardia propia del luchador, en el impacto llegan a la forma escrita.
+    # las animaciones están escritas sobre la guardia estándar: lo que se aplica es su desplazamiento sobre la
+    # guardia propia de cada luchador, que conserva su postura (el sumo agachado, la capoeira baja) en todo el
+    # golpe en vez de enderezarse a la forma escrita en el impacto
     d = STANCES["default"]
     for k in _J:
         if p[k] != base[k]:
-            p[k] = (p[k][0] + (base[k][0] - d[k][0]) * (1 - ext), p[k][1] + (base[k][1] - d[k][1]) * (1 - ext))
+            p[k] = (p[k][0] + (base[k][0] - d[k][0]), p[k][1] + (base[k][1] - d[k][1]))
     return p
 
 
@@ -147,7 +148,7 @@ def _attack_shape(anim, base, ext, lean, fd, kick):
     elif anim == "cross":
         p["hd_l"] = (lerp(26, 100, ext), -140)
         p["el_l"] = (lerp(14, 66, ext), -136)
-        p["hd_r"] = (lerp(40, 20, ext), -150)
+        p["hd_r"] = (lerp(40, 27, ext), lerp(-140, -143, ext))      # la otra mano guarda bajo la barbilla, no sobre la cara
         p["chest"] = (2 + lean, -140)
         p["head"] = (4 + lean, -176)
         p["hip"] = (lean * 0.5, -95)
@@ -165,15 +166,15 @@ def _attack_shape(anim, base, ext, lean, fd, kick):
         p["hip"] = (-6 * ext, -95)
         p["chest"] = (-10 * ext, -140)
         p["head"] = (-12 * ext, -176)
-        p["hd_l"] = (18, -150)
+        p["hd_l"] = (lerp(26, 12, ext), lerp(-140, -137, ext))     # la guardia acompaña al cuerpo que se echa atrás
     elif anim == "kick_high":
         p["kn_r"] = (lerp(16, 50, ext), lerp(-50, -120, ext))
         p["ft_r"] = (lerp(22, 108, ext), lerp(0, -160, ext))
         p["hip"] = (-10 * ext, -95)
         p["chest"] = (-18 * ext, -138)
         p["head"] = (-22 * ext, -172)
-        p["hd_l"] = (-10, -150)
-        p["hd_r"] = (30, -120)
+        p["hd_l"] = (lerp(26, 2, ext), lerp(-140, -136, ext))
+        p["hd_r"] = (lerp(40, 30, ext), lerp(-148, -120, ext))
     elif anim == "sweep":
         p = pose_crouch(0, fd)
         p["kn_r"] = (lerp(26, 60, ext), -34)
@@ -202,7 +203,7 @@ def _attack_shape(anim, base, ext, lean, fd, kick):
             p["hip"] = (-14 * ext, -95)
             p["chest"] = (-26 * ext, -136)
             p["head"] = (-30 * ext, -170)
-            p["hd_l"] = (-20 * ext, -150)
+            p["hd_l"] = (lerp(26, -20, ext), lerp(-140, -150, ext))
         else:
             p["hd_r"] = (lerp(40, 110, ext), -136)
             p["hd_l"] = (lerp(26, 96, ext), -124)

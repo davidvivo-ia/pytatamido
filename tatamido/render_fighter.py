@@ -572,15 +572,19 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
     cache: dict = {}
     if pieces is None:
         pieces = []
-    state = {"last": 0}
+    state = {"last": 0, "body": 0, "body_mat": None}
+    TRIM = (Figure.PATS["stitch"],)
 
     def piece(anchor, ang, w_px, mat, pat, idx):
         pid = id_base + len(pieces)
-        if pid > 254:                     # sin hueco en la tabla: hereda la última pieza
-            return state["last"]
+        if pid > 254:                     # sin hueco en la tabla: hereda la última pieza (nunca la tinta, que no se ilumina)
+            return state["body"] or state["last"] or 254
         seed = math.fmod(idx * 0.6180339 + id_base * 0.1372, 1.0) * 37.0
         pieces.append((anchor[0], anchor[1], ang, k, float(M.get(mat, 2)), float(pat), seed, w_px / max(1e-6, k)))
         state["last"] = pid
+        if pat not in TRIM:
+            state["body"] = pid           # los surcos van sobre la última pieza de cuerpo, no sobre un ribete
+            state["body_mat"] = mat
         return pid
 
     for g in sorted(groups):
@@ -603,7 +607,9 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
             pf = shared.get(("f", idx)) if shared is not None else None
             pid2 = None
             if groove:
-                pid = state["last"]
+                pid = state["body"] or state["last"]
+            elif kind in ("line", "dot") and state["body"] and state["body_mat"] == mat:
+                pid = state["body"]           # trazos y puntos del mismo material: no gastan entrada en la tabla
             elif kind == "tube":
                 a, b, ra, rb, bu, bt, side = geo
                 A, B = T(a), T(b)
@@ -744,6 +750,21 @@ def _expression(f, look):
 
 
 _LEGS: Dict[str, Tuple[float, float]] = {}
+_NECK: Dict[str, float] = {}
+
+
+def _neck_len(fd):
+    """Distancia fija del pecho al centro de la cabeza, medida en la guardia (el esqueleto de poses la estira
+    o la encoge de 29 a 37 cm según la pose: en las caídas el cuello desaparecía)."""
+    key = fd["id"]
+    if key not in _NECK:
+        try:
+            p = _stance(fd)
+            c0, h0 = p["chest"], p["head"]
+            _NECK[key] = math.hypot(h0[0] - c0[0], h0[1] - c0[1]) * (0.64 - 0.15) * 0.94
+        except Exception:
+            _NECK[key] = 16.5
+    return _NECK[key]
 
 
 def _leg_lengths(fd):
@@ -778,6 +799,50 @@ def _leg_ik(H, ft0, T, S, front, up, stretch=1.2):
     return (H[0] + ux * a + px * h * sg, H[1] + uy * a + py * h * sg), ft
 
 
+PUNCHES = {"jab": "r", "hook": "r", "cross": "l"}
+
+
+def _strike(f, J, B):
+    """Puñetazo en sus fotogramas activos: el puño dibujado tiene que llegar a donde el juego cuenta el golpe.
+    Busca la superficie del rival (o el frente del golpe si falla); lo que el brazo no alcanza con sus huesos lo
+    pone una zancada: pecho, cabeza y hombros adelante, la cadera un poco y el pie delantero avanza.
+    Modifica J y devuelve (lado, mano objetivo) o None."""
+    m = getattr(f, "move", None)
+    if f.state != Fighter.ATTACK or m is None or m.anim not in PUNCHES:
+        return None
+    st, ac = getattr(m, "startup", 0), getattr(m, "active", 1)
+    t = f.timer
+    if t < st * 0.6 or t > st + ac + getattr(m, "recovery", 0) * 0.5:
+        return None
+    ext = smoothstep(clamp((t - st * 0.6) / max(1.0, st * 0.4), 0.0, 1.0)) * (
+        1.0 - smoothstep(clamp((t - st - ac) / max(1.0, getattr(m, "recovery", 0) * 0.5), 0.0, 1.0)))
+    side = PUNCHES[m.anim]
+    sc = max(0.5, f.scale)
+    front = 20 + getattr(m, "rng", 70)
+    look = getattr(f, "look_at", None)
+    if look is not None and look[0] * f.facing > 0:
+        tip_w = min(front, abs(look[0]) - 20 + 4)                # el puño entra un poco en el cuerpo del rival
+    else:
+        tip_w = front - 8
+    hand = tip_w / sc - 5.6 * B["hand"] / 4.3
+    sh = J["sh_" + side]
+    U, F_ = B.get("arm", (30.0, 25.5))
+    natural = sh[0] + (U + F_) * 1.25 + 7.0
+    lunge = clamp((hand - natural) / 0.82, 0.0, 52.0) * ext
+    if lunge > 0:
+        for k, w in (("chest", 0.82), ("head", 0.82), ("sh_l", 0.82), ("sh_r", 0.82), ("el_l", 0.82), ("el_r", 0.82),
+                     ("hd_l", 0.82), ("hd_r", 0.82), ("hip", 0.5)):
+            J[k] = (J[k][0] + lunge * w, J[k][1] + (lunge * 0.1 if k == "hip" else lunge * 0.04))
+        fs = "ft_r" if J["ft_r"][0] >= J["ft_l"][0] else "ft_l"
+        ks = "kn_" + fs[-1]
+        J[fs] = (J[fs][0] + lunge * 0.85, J[fs][1])
+        J[ks] = (J[ks][0] + lunge * 0.75, J[ks][1])
+    hd = J["hd_" + side]
+    target = (hd[0] + (hand - hd[0]) * ext, hd[1])
+    J["hd_" + side] = target
+    return side, ext
+
+
 def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     fd = f.fd
     lk = LOOKS[fd["id"]]
@@ -804,16 +869,20 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     skin = hex2rgb(lk["skin"])
     cloth = lk.get("cloth", "#FFFFFF")
     skin_sheen = 0.6 + 2.2 * sweat
-    J = pose
+    J = dict(pose)
+    strike = _strike(f, J, B)                # puñetazo activo: brazo que golpea y zancada hasta el rival
     H, Cc0, Hd0 = J["hip"], J["chest"], J["head"]
     # el esqueleto de poses deja los hombros bajos y la cabeza lejos (36 cm): subimos la cintura
     # escapular y acercamos la cabeza para un cuello real de ~8 cm visibles
     lift = ((Hd0[0] - Cc0[0]) * 0.15, (Hd0[1] - Cc0[1]) * 0.15)
-    J = dict(J)
     for jn, w in (("chest", 1.0), ("sh_l", 0.55), ("sh_r", 0.55), ("el_l", 0.2), ("el_r", 0.2)):
         J[jn] = (J[jn][0] + lift[0] * w, J[jn][1] + lift[1] * w)
     Cc = J["chest"]
-    Hd = _lerp2(Cc0, Hd0, 0.64)
+    hx_, hy_ = _norm(Hd0[0] - Cc[0], Hd0[1] - Cc[1])
+    if hx_ == 0 and hy_ == 0:
+        hy_ = -1.0
+    nl = _neck_len(fd)
+    Hd = (Cc[0] + hx_ * nl, Cc[1] + hy_ * nl)          # cuello de longitud fija en todas las poses
 
     # ── columna y torso ──────────────────────────────────────────────────────
     N = _lerp2(Cc, Hd, 0.06)
@@ -841,6 +910,37 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
 
     def wb(t):
         return _interp(back, t)
+
+    up_ = (ax / L, ay / L)
+
+    yokes = {}
+
+    def yoke(g, col, mat, grow=0.0, sheen=0.5, pat=None):
+        """Trapecio y hombros: la línea que baja de la base del cuello al deltoides, con la masa del trapecio
+        detrás. Sin ella, el hombro era un bulto pegado al borde recto del torso. El hombro adelantado
+        (puñetazo) arrastra el pecho: el contorno delantero se estira hacia él."""
+        fig.m(mat, pat=pat)
+        dl = B["delt"]
+        for sh in (J["sh_l"], J["sh_r"]):
+            th = dl + 0.6 + grow                          # tan alto como la manga o el deltoides
+            top = (sh[0] + up_[0] * th, sh[1] + up_[1] * th)
+            fr = (sh[0] + nx * (dl * 0.75 + grow) + up_[0] * dl * 0.15, sh[1] + ny * (dl * 0.75 + grow) + up_[1] * dl * 0.15)
+            bk = (sh[0] - nx * (dl * 0.9 + grow) + up_[0] * dl * 0.45, sh[1] - ny * (dl * 0.9 + grow) + up_[1] * dl * 0.45)
+            pts = [S(0.8, wf(0.8) + grow), fr, (top[0] + nx * dl * 0.3, top[1] + ny * dl * 0.3), top,
+                   (top[0] - nx * dl * 0.6, top[1] - ny * dl * 0.6), bk, S(0.78, -(wb(0.78) + grow))]
+            fig.poly(g, pts, col, sheen=sheen, smooth=2)
+            yokes[sh] = (pts, col, mat, sheen, pat)
+
+    def shoulder_patch(g, sh):
+        """Sobre la raíz del brazo: el canesú otra vez, encogido y sin contorno. Tapa la costura interior y el
+        remate redondo de la manga (o del deltoides) sin tocar la silueta, que sigue entintando el canesú."""
+        if sh not in yokes:
+            return
+        pts, col, mat, sheen, pat = yokes[sh]
+        cx = sum(q[0] for q in pts) / len(pts)
+        cy = sum(q[1] for q in pts) / len(pts)
+        fig.m(mat, pat=pat)
+        fig.poly(g, [(cx + (q[0] - cx) * 0.78, cy + (q[1] - cy) * 0.78) for q in pts], col, outline=False, sheen=sheen, smooth=2)
 
     # ── piernas ──────────────────────────────────────────────────────────────
     bottom = lk["bottom"]
@@ -944,13 +1044,40 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     for side in ("l", "r"):
         J["kn_" + side], J["ft_" + side] = _leg_ik(H, J["ft_" + side], T_, S_, (-uy_, ux_), (ux_, uy_))
 
+    # pies: apoyados, planos en el suelo; si la espinilla se vence sobre el pie más de lo que dobla el tobillo,
+    # el talón sube y el pie pivota sobre la base de los dedos (que siguen en el suelo); en el aire, en punta
+    foot_frames = {}
+    for side in ("l", "r"):
+        kn, ft = J["kn_" + side], J["ft_" + side]
+        sx, sy = _norm(ft[0] - kn[0], ft[1] - kn[1])
+        if sx == 0 and sy == 0:
+            sy = 1.0
+        grounded = ft[1] > -4.0 and f.state not in (Fighter.JUMP, Fighter.KNOCK, Fighter.THROWN)
+        if grounded:
+            lean = math.degrees(math.atan2(-sx, sy))            # > 0: la rodilla por delante del tobillo
+            th = math.radians(clamp(lean - 26.0, 0.0, 55.0))     # lo que el tobillo ya no dobla: sube el talón
+            if th > 0.01:
+                ball = 12.0
+                tgt = (ft[0] + ball * (1.0 - math.cos(th)) * 0.6, ft[1] - ball * math.sin(th) * 0.75)
+                J["kn_" + side], J["ft_" + side] = _leg_ik(H, tgt, T_, S_, (-uy_, ux_), (ux_, uy_))
+                kn, ft = J["kn_" + side], J["ft_" + side]
+                sx, sy = _norm(ft[0] - kn[0], ft[1] - kn[1])
+            fv = (math.cos(th), math.sin(th))                     # hacia delante (y abajo si sube el talón)
+        else:
+            px_, py_ = sy, -sx                                     # perpendicular a la espinilla
+            k_ = 0.55                                              # empeine estirado
+            fv = _norm(px_ * (1 - k_) + sx * k_, py_ * (1 - k_) + sy * k_)
+            th = 0.0
+        foot_frames[side] = (fv, th, grounded)
+
     for side, g, depth in (("l", 1, 0.84), ("r", 3, 1.0)):
         kn, ft = J["kn_" + side], J["ft_" + side]
         sx, sy = _norm(ft[0] - kn[0], ft[1] - kn[1])
         if sx == 0 and sy == 0:
             sy = 1.0
         ankle = (ft[0] - sx * 6, ft[1] - sy * 6)
-        fdx, fdy = sy, -sx                   # el pie, perpendicular a la espinilla
+        (fdx, fdy), heel_up, grounded = foot_frames[side]
+        dvx, dvy = -fdy, fdx                 # del empeine a la planta
         x_m = kn[0]
         sk = C(skin, x_m, depth)
         L1, L2 = dist(H, kn), dist(kn, ankle)
@@ -962,8 +1089,12 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                 fig.m("skin", True)
                 fig.line(g, [_lerp2(kn, ankle, 0.12), _lerp2(kn, ankle, 0.42)], shade(sk, 0.8), 0.35)     # gemelo
         # pie
-        def F_(a, b):
-            return (ankle[0] + fdx * a + sx * b, ankle[1] + fdy * a + sy * b)
+        def F_(a, b, toe=11.0):
+            # la parte de los dedos (a > toe) vuelve a quedar plana en el suelo cuando el talón está subido
+            if heel_up > 0.01 and a > toe:
+                bx, by = ankle[0] + fdx * toe + dvx * b, ankle[1] + fdy * toe + dvy * b
+                return (bx + (a - toe), by)
+            return (ankle[0] + fdx * a + dvx * b, ankle[1] + fdy * a + dvy * b)
         if feet in ("botas", "botas_altas", "zapatillas"):
             bc = C(lk.get("boots", "#F2F2F2") if feet != "zapatillas" else "#EDEDED", x_m, depth)
             foot = [F_(-5, -3), F_(-5.5, 6.5), F_(17.5, 6.5), F_(18.5, 3.5), F_(12, 0.5), F_(4, -3.5)]
@@ -1029,6 +1160,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     sk_t = C(skin, tx)
     fig.m("skin")
     fig.poly(2, torso(front, back), sk_t, sheen=skin_sheen, smooth=2)
+    yoke(2, sk_t, "skin", sheen=skin_sheen)
     ex = lk["extras"]
     if top == "none":
         dk = shade(sk_t, 0.78)
@@ -1075,6 +1207,8 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         F = [S(t, w) for t, w in zip(ts, fr)]
         K = [S(t, -w) for t, w in zip(ts, bk)]
         fig.poly(4, F + K[::-1], jc, sheen=0.5, edge=True, smooth=2)
+        yoke(4, jc, "cloth", grow=grow * 0.6)
+        fig.m("cloth")
         # pliegues de la tela
         fig.m("cloth", True)
         fd_ = shade(jc, 0.8)
@@ -1277,7 +1411,17 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     fig.tube(5, N, neck_end, nr * 1.05, nr, C(skin, N[0]), sheen=skin_sheen)
     if lk["body"] == "sumo":
         fig.tube(5, N, HP(0.3, 0.8), nr * 1.1, nr * 0.9, C(skin, N[0]), sheen=skin_sheen)
-    head_pts = [HP(x, y) for x, y in _face_points(lk)]
+    # impacto: los primeros fotogramas del golpe aplastan la mejilla y empujan la mandíbula hacia atrás
+    hitk = 0.0
+    if f.state in (Fighter.HIT, Fighter.STUN) and f.timer < 10:
+        hitk = (1.0 - f.timer / 10.0) ** 1.5
+    if hitk > 0:
+        def squash(x, y):
+            front = clamp((x - 0.2) / 0.9, 0.0, 1.0)
+            return (x - 0.13 * hitk * front, y + 0.05 * hitk * front * (1.0 if y > 0 else -0.4))
+        head_pts = [HP(*squash(x, y)) for x, y in _face_points(lk)]
+    else:
+        head_pts = [HP(x, y) for x, y in _face_points(lk)]
     fig.poly(5, head_pts, face_c, sheen=0.4 + skin_sheen * 0.5)
     # oreja
     ear_c = shade(face_c, 0.92)
@@ -1294,17 +1438,28 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     expr = _expression(f, lk)
     dark = (22, 14, 12)
     iris = hex2rgb(lk.get("eyes", "#3A2618"))
+    # parpadeo: cada 3-5 s, unos 7 fotogramas, desfasado por luchador
+    ph_ = (t_anim * 0.27 + (sum(map(ord, fd["id"])) % 17) / 17.0) % 1.0
+    blink = expr not in ("dolor", "grito") and ph_ < 0.03
+    # mirada: hacia el rival (un poco arriba o abajo si salta o se agacha)
+    lx_, ly_ = getattr(f, "look_at", (100.0, 0.0))
+    gaze = 0.0 if lx_ * fac >= 0 else -0.35            # con el rival a la espalda, los ojos se van atrás
+    gaze_y = clamp(-ly_ / max(80.0, abs(lx_) + 40.0), -0.05, 0.05)
     # ojo: párpado superior entintado y grueso, iris con brillo, línea inferior fina
-    if expr == "dolor":
+    if blink:
+        fig.line(5, [HP(0.46, -0.1), HP(0.6, -0.06), HP(0.76, -0.1)], dark, 0.06 * R)
+        fig.line(5, [HP(0.47, -0.14), HP(0.6, -0.16), HP(0.73, -0.13)], shade(face_c, 0.8), 0.025 * R)
+    elif expr == "dolor":
         fig.line(5, [HP(0.46, -0.12), HP(0.6, -0.08), HP(0.74, -0.12)], dark, 0.06 * R)
         fig.line(5, [HP(0.5, -0.04), HP(0.62, -0.02), HP(0.72, -0.05)], shade(face_c, 0.7), 0.03 * R)
     else:
         open_ = 1.15 if expr == "grito" else 1.0
         eye = [HP(0.47, -0.11), HP(0.58, -0.18 * open_), HP(0.72, -0.13), HP(0.75, -0.08), HP(0.6, -0.04)]
         fig.poly(5, eye, (236, 232, 222), outline=False, shade_=False, smooth=1)
-        fig.dot(5, HP(0.65, -0.1), 0.068 * R, iris)
-        fig.dot(5, HP(0.665, -0.1), 0.036 * R, dark)
-        fig.dot(5, HP(0.635, -0.125), 0.02 * R, (255, 255, 250))
+        gy = -0.1 - gaze_y
+        fig.dot(5, HP(0.65 + gaze * 0.2, gy), 0.068 * R, iris)
+        fig.dot(5, HP(0.665 + gaze * 0.2, gy), 0.036 * R, dark)
+        fig.dot(5, HP(0.635 + gaze * 0.2, gy - 0.025), 0.02 * R, (255, 255, 250))
         fig.line(5, [HP(0.45, -0.1), HP(0.57, -0.19 * open_), HP(0.7, -0.15), HP(0.79, -0.1)], dark, 0.075 * R)
         fig.line(5, [HP(0.52, -0.04), HP(0.64, -0.025), HP(0.73, -0.06)], shade(face_c, 0.72), 0.022 * R)
     # ceja de pincel
@@ -1481,8 +1636,10 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     up0, up1, upb = B["upper"]
     fo0, fo1, fob = B["fore"]
     sleeve = lk.get("sleeve", 0.0) if top in ("gi", "kurtka", "changshan", "keikogi") else 0.0
-    open_hand = (f.state == Fighter.THROWING or (f.state == Fighter.ATTACK and f.move is not None and f.move.anim == "grab")
-                 or (lk.get("guard_open") and f.state in (Fighter.IDLE, Fighter.WALK, Fighter.INTRO)))
+    grabbing = f.state == Fighter.ATTACK and f.move is not None and f.move.anim == "grab"
+    # en el agarre la mano va abierta mientras busca y se cierra en garra al hacer presa (y durante la proyección)
+    claw = f.state == Fighter.THROWING or (grabbing and f.timer >= getattr(f.move, "startup", 0))
+    open_hand = (grabbing and not claw) or (lk.get("guard_open") and f.state in (Fighter.IDLE, Fighter.WALK, Fighter.INTRO))
     def hand_frame(el, hd):
         fx_, fy_ = _norm(hd[0] - el[0], hd[1] - el[1])
         if fx_ == 0 and fy_ == 0:
@@ -1490,7 +1647,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         px_, py_ = -fy_, fx_
         return lambda a, b: (hd[0] + fx_ * a + px_ * b, hd[1] + fy_ * a + py_ * b)
 
-    def arm_ik(sh, el0, hd0):
+    def arm_ik(sh, el0, hd0, stretch=1.2, pro_max=3.0):
         """Brazo de huesos fijos (cinemática inversa de dos huesos). El esqueleto de poses coloca codo y mano
         libremente (de 30 a 85 cm de brazo según la pose); aquí el brazo y el antebrazo miden lo que miden,
         el codo dobla hacia donde lo pide la pose y, si la mano no llega, el hombro se adelanta y el brazo se
@@ -1501,10 +1658,10 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         ux, uy = dx / D, dy / D
         reach = (U + F) * 0.985
         if D > reach:                                  # protracción del hombro hacia el objetivo
-            pro = min(3.0, D - reach)
+            pro = min(pro_max, D - reach)
             sh = (sh[0] + ux * pro, sh[1] + uy * pro)
             D -= pro
-        k = clamp(D / reach, 1.0, 1.2)                 # y un estirón de animación
+        k = clamp(D / reach, 1.0, stretch)             # y un estirón de animación
         U, F = U * k, F * k
         D = clamp(D, abs(U - F) + 2.0, (U + F) * 0.995)
         hd = (sh[0] + ux * D, sh[1] + uy * D)
@@ -1523,7 +1680,9 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         return (flex, ext) if cr >= 0 else (ext, flex)
 
     for side, g, depth in (("l", 0, 0.84), ("r", 6, 1.0)):
-        sh, el, hd = arm_ik(J["sh_" + side], J["el_" + side], J["hd_" + side])
+        hit_arm = strike is not None and strike[0] == side
+        sh, el, hd = arm_ik(J["sh_" + side], J["el_" + side], J["hd_" + side],
+                            *((1.2 + 0.05 * strike[1], 3.0 + 4.0 * strike[1]) if hit_arm else ()))
         fig.m("skin")
         sk = C(skin, el[0], depth)
         fore_sk = mixc(sk, (205, 80, 70), min(0.4, 0.4 * red)) if not mono else sk
@@ -1551,20 +1710,25 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             outer = [(0, B["delt"] * 0.3), (us, B["delt"] + 0.6), (ue * 0.75, up0 + 2.2), (ue, up1 + 2.9), (1, fo1 + wide + 0.6)]
             kl_, kr_ = bend_sides(sh, el, hd, inner, outer)
             fig.ribbon(g, [cap, sh, el, cut], kl_, kr_, slc, sheen=0.5, edge=True)
+            if side == "r":
+                shoulder_patch(g, J["sh_r"])
             # puño de la manga: refuerzo con pespuntes
             fig.m("cloth", pat="stitch")
             c0 = _lerp2(el, cut, 0.84)
             fig.ribbon(g, [c0, _lerp2(c0, cut, 0.5), cut], [(0, fo1 + wide + 0.5), (1, fo1 + wide + 0.75)],
                        [(0, fo1 + wide - 0.2), (1, fo1 + wide - 0.05)], shade(slc, 0.95), sheen=0.4)
             fig.m("cloth", True)
-            # pliegues del codo, del lado de dentro del doblez
+            # pliegues del codo, del lado de dentro del doblez: nacen al doblar el brazo (recto, la manga es lisa)
             cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])
             nx_, ny_ = _norm(-(el[1] - sh[1]), el[0] - sh[0])
             sgn = 1.0 if cr >= 0 else -1.0
-            for o_, w_ in ((0.45, 0.8), (0.15, 0.6)):
-                off = (nx_ * sgn * up1 * o_, ny_ * sgn * up1 * o_)
-                fig.line(g, [(p_[0] + off[0], p_[1] + off[1]) for p_ in (_lerp2(sh, el, 0.7), el, _lerp2(el, cut, 0.25))],
-                         shade(slc, 0.8), w_)
+            u1_, u2_ = _norm(el[0] - sh[0], el[1] - sh[1]), _norm(hd[0] - el[0], hd[1] - el[1])
+            bend = clamp((1.0 - (u1_[0] * u2_[0] + u1_[1] * u2_[1])) / 0.8, 0.0, 1.0)
+            if bend > 0.12:
+                for o_, w_ in ((0.45, 0.8), (0.15, 0.6)):
+                    off = (nx_ * sgn * up1 * o_, ny_ * sgn * up1 * o_)
+                    fig.line(g, [(p_[0] + off[0], p_[1] + off[1]) for p_ in
+                                 (_lerp2(sh, el, 1.0 - 0.3 * bend), el, _lerp2(el, cut, 0.25 * bend))], shade(slc, 0.8), w_ * (0.5 + 0.5 * bend))
             if top == "changshan":
                 fig.m("cloth")
                 fig.line(g, [_lerp2(el, cut, 0.9), cut], C(lk["accent"], el[0], depth), 0.5)
@@ -1584,6 +1748,8 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             dtip = _lerp2(sh, el, 0.45)
             fig.ribbon(g, [cap, sh, dtip], [(0, B["delt"] * 0.6), (0.35, B["delt"] * 0.92), (1, up0 * 0.55)],
                        [(0, B["delt"] * 0.55), (0.35, B["delt"] * 0.85), (1, up0 * 0.5)], arm_c, sheen=skin_sheen)
+            if side == "r" and top == "none":
+                shoulder_patch(g, J["sh_r"])
             fig.m("skin", True)
             cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])
             nx_, ny_ = _norm(-(el[1] - sh[1]), el[0] - sh[0])
@@ -1622,31 +1788,65 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.line(g, [HF(-5.8 * hs, -4.4 * hs), HF(-5.8 * hs, 4.4 * hs)], C("#3A3A3A", hd[0], depth), 1.6, taper=False)
             fig.m("leather", True)
             fig.line(g, [HF(6.0 * hs, -3.0 * hs), HF(7.4 * hs, 0), HF(6.0 * hs, 3.0 * hs)], shade(gc, 1.6), 0.3)
+        elif claw:
+            # garra: la palma empuja y los dedos se cierran en gancho sobre la solapa, nudillos marcados
+            fig.m("skin")
+            H_ = lambda a, b: HF(a * hs, b * hs)
+            palm = [H_(a, b) for a, b in ((-1.5, -2.8), (3.5, -3.8), (8.4, -3.4), (9.6, -0.6), (9.4, 2.4), (7.6, 3.6), (3.5, 3.4), (-1.5, 2.7))]
+            fig.poly(g, palm, fore_sk, sheen=skin_sheen, smooth=2)
+            tips = []
+            for i, (bk, ln, rr) in enumerate(((2.45, 5.6, 0.82), (0.82, 7.0, 0.9), (-0.82, 7.6, 0.93), (-2.45, 7.0, 0.9))):
+                k0 = H_(7.8, bk * 0.85)
+                k1 = H_(7.8 + ln * 0.42, bk * 0.85 + 0.6)                  # falange: adelante
+                k2 = H_(7.8 + ln * 0.5, bk * 0.85 + 0.6 + ln * 0.36)       # media: hacia abajo
+                k3 = H_(7.8 + ln * 0.3, bk * 0.85 + 0.6 + ln * 0.62)       # punta: vuelve hacia la palma
+                fig.tube(g, k0, k1, rr * hs, rr * 0.95 * hs, fore_sk, sheen=skin_sheen * 0.6)
+                fig.tube(g, k1, k2, rr * 0.95 * hs, rr * 0.85 * hs, fore_sk, sheen=skin_sheen * 0.6)
+                fig.tube(g, k2, k3, rr * 0.85 * hs, rr * 0.72 * hs, fore_sk, sheen=skin_sheen * 0.6)
+                tips.append((k0, k1, k2, k3))
+            t0, t1, t2 = H_(2.0, -2.6), H_(5.6, -4.2), H_(8.6, -3.0)
+            fig.tube(g, t0, t1, 1.35 * hs, 1.15 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            fig.tube(g, t1, t2, 1.12 * hs, 0.9 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            # tinta fina entre dedos y nudillos en relieve
+            crease = shade(fore_sk, 0.6)
+            for (a0, a1, a2, a3), (b0, b1, b2, b3) in zip(tips, tips[1:]):
+                fig.line(g, [_lerp2(a1, b1, 0.5), _lerp2(a2, b2, 0.5), _lerp2(a3, b3, 0.5)], crease, 0.16 * hs)
+            fig.m("skin", True)
+            fig.line(g, [tips[0][1], tips[1][1], tips[2][1], tips[3][1]], shade(fore_sk, 0.8), 0.3 * hs)
         elif open_hand:
             fig.m("skin")
             H_ = lambda a, b: HF(a * hs, b * hs)
             palm = [H_(a, b) for a, b in ((-1.5, -2.8), (3.5, -3.7), (8.6, -3.3), (9.4, -1.0), (9.2, 1.6), (8.4, 3.3), (3.5, 3.4), (-1.5, 2.7))]
             fig.poly(g, palm, fore_sk, sheen=skin_sheen, smooth=2)
-            # dedos delante de la palma, de meñique a índice: dos falanges con curva y contorno propio
+            # dedos delante de la palma, de meñique a índice: dos falanges con curva, algo abiertos en abanico
+            tips = []
             for bk, ln, rr in ((2.45, 5.6, 0.82), (0.82, 7.0, 0.9), (-0.82, 7.6, 0.93), (-2.45, 7.0, 0.9)):
+                spread = bk * 0.1
                 k0 = H_(7.6, bk)
-                k1 = H_(7.6 + ln * 0.6, bk + 0.3 + ln * 0.05)
-                k2 = H_(7.6 + ln * 1.0, bk + 1.2 + ln * 0.12)
+                k1 = H_(7.6 + ln * 0.6, bk + 0.3 + ln * 0.05 + spread * ln * 0.6)
+                k2 = H_(7.6 + ln * 1.0, bk + 1.2 + ln * 0.12 + spread * ln)
                 fig.tube(g, k0, k1, rr * hs, rr * 0.93 * hs, fore_sk, sheen=skin_sheen * 0.6)
                 fig.tube(g, k1, k2, rr * 0.93 * hs, rr * 0.78 * hs, fore_sk, sheen=skin_sheen * 0.6)
+                tips.append((k0, k1, k2))
             # pulgar: sale de la base de la palma y se abre hacia delante
             t0, t1, t2 = H_(2.0, -2.6), H_(5.4, -4.9), H_(8.4, -5.4)
             fig.tube(g, t0, t1, 1.35 * hs, 1.15 * hs, fore_sk, sheen=skin_sheen * 0.6)
             fig.tube(g, t1, t2, 1.12 * hs, 0.9 * hs, fore_sk, sheen=skin_sheen * 0.6)
+            crease = shade(fore_sk, 0.6)
+            for (a0, a1, a2), (b0, b1, b2) in zip(tips, tips[1:]):
+                fig.line(g, [_lerp2(a0, b0, 0.5), _lerp2(a1, b1, 0.5), _lerp2(_lerp2(a1, b1, 0.5), _lerp2(a2, b2, 0.5), 0.6)], crease, 0.15 * hs)
+            fig.line(g, [H_(2.6, -2.2), H_(5.0, -3.6)], crease, 0.15 * hs)                                    # base del pulgar
             fig.m("skin", True)
             fig.line(g, [H_(3.0, 0.8), H_(6.0, 0.2), H_(8.6, 0.9)], shade(fore_sk, 0.8), 0.45)        # línea de la palma
+            fig.line(g, [tips[0][1], tips[1][1], tips[2][1], tips[3][1]], shade(fore_sk, 0.82), 0.25 * hs)    # pliegue de los dedos
         else:
             fig.m("skin")
             H_ = lambda a, b: HF((a - 2.6) * hs, b * hs)
             fist = [H_(a, b) for a, b in ((-1.6, -3.4), (3.0, -4.1), (6.6, -3.9), (7.9, -2.4), (8.2, 0.6), (7.6, 3.3), (5.4, 4.3), (1.2, 4.0), (-1.6, 3.2))]
             fig.poly(g, fist, fore_sk, sheen=skin_sheen, smooth=2)
-            # dedos plegados sobre la cara del puño: cuatro falanges redondeadas, cada una con su contorno
-            for i, bk in enumerate((-2.55, -0.85, 0.85, 2.55)):
+            # dedos plegados sobre la cara del puño: cuatro falanges redondeadas
+            bks = (-2.55, -0.85, 0.85, 2.55)
+            for i, bk in enumerate(bks):
                 r_ = (0.98 - 0.06 * abs(i - 1.5)) * hs
                 fig.tube(g, H_(8.0, bk), H_(5.2, bk + 0.5), r_, r_ * 0.95, fore_sk, sheen=skin_sheen * 0.6)
             # pulgar cruzado sobre índice y corazón
@@ -1654,6 +1854,14 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.tube(g, H_(4.4, -2.3), H_(6.6, -0.2), 1.12 * hs, 0.95 * hs, fore_sk, sheen=skin_sheen * 0.6)
             fig.m("skin")
             fig.dot(g, H_(6.6, -0.2), 0.42 * hs, nail)
+            # tinta fina: separación de los dedos plegados, borde del pulgar y fila de nudillos
+            crease = shade(fore_sk, 0.6)
+            for b0, b1 in zip(bks[1:], bks[2:]):
+                m_ = (b0 + b1) * 0.5
+                fig.line(g, [H_(8.1, m_), H_(6.4, m_ + 0.25), H_(5.0, m_ + 0.55)], crease, 0.15 * hs)
+            fig.line(g, [H_(1.2, -2.3), H_(4.4, -1.2), H_(6.4, 0.6)], crease, 0.16 * hs)
+            fig.m("skin", True)
+            fig.line(g, [H_(8.6, -3.0), H_(8.9, 0.0), H_(8.4, 3.0)], shade(fore_sk, 0.8), 0.35 * hs)            # nudillos
         if "manchas" in ex:
             fig.dot(g, (hd[0] - 1, hd[1] - 1), 0.5, shade(fore_sk, 0.8))
     return fig

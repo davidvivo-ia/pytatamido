@@ -150,6 +150,7 @@ class Fighter:
         audio = match.audio
         self.timer += 1
         self.anim_t += 1 / 60
+        self.look_at = (opp.x - self.x, (opp.y + 30 * opp.scale * opp.crouching) - self.y)   # a dónde miran los ojos
         self.rim = max(0.0, self.rim - 0.08)
         if self.stun_frames > 0:
             self.stun_frames -= 1
