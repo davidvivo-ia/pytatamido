@@ -174,6 +174,15 @@ def pose_attack(anim, phase, fd, kick=False):
     for k in _J:
         if p[k] != base[k]:
             p[k] = (p[k][0] + (base[k][0] - d[k][0]), p[k][1] + (base[k][1] - d[k][1]))
+    if anim == "hook":
+        # el gancho se da con el codo doblado: en guardias de manos muy adelantadas (sumo, lucha) la suma dejaba
+        # la mano a un brazo entero del hombro y salía recto
+        sx, sy = p["sh_r"]
+        hx, hy = p["hd_r"]
+        dl = math.hypot(hx - sx, hy - sy)
+        if dl > 40.0:
+            p["hd_r"] = (sx + (hx - sx) * 40.0 / dl, sy + (hy - sy) * 40.0 / dl)
+            p["el_r"] = (sx + (hx - sx) * 0.42 / dl * 40.0, sy + 20.0)
     return p
 
 
@@ -181,20 +190,28 @@ def _attack_shape(anim, base, ext, lean, fd, kick, ext_knee=None):
     p = dict(base)
     ek = ext if ext_knee is None else ext_knee           # en las patadas la rodilla sube antes que el pie (chamber)
     if anim == "jab":
-        p["hd_r"] = (lerp(40, 92, ext), -138)
-        p["el_r"] = (lerp(28, 60, ext), -132)
+        p["hd_r"] = (lerp(40, 92, ext), lerp(-140, -144, ext))
+        p["el_r"] = (lerp(28, 58, ext), lerp(-118, -134, ext))      # el codo sube detrás del puño, no se abre
+        p["sh_r"] = (8 + 4 * max(0.0, ext), -138 - 2 * max(0.0, ext))   # el hombro protege el mentón
         p["chest"] = (2 + lean * 0.6, -140)
-        p["head"] = (4 + lean * 0.6, -176)
+        p["head"] = (4 + lean * 0.5, -176 + 2.5 * max(0.0, ext))
+        p["hd_l"] = (lerp(26, 18, ext), lerp(-140, -152, ext))      # la otra mano al mentón
+        p["el_l"] = (lerp(14, 8, ext), lerp(-118, -124, ext))
     elif anim == "cross":
-        p["hd_l"] = (lerp(26, 100, ext), -140)
-        p["el_l"] = (lerp(14, 66, ext), -136)
+        p["hd_l"] = (lerp(26, 100, ext), lerp(-140, -145, ext))
+        p["el_l"] = (lerp(14, 62, ext), lerp(-118, -134, ext))
+        p["sh_l"] = (-6 + 14 * max(0.0, ext), -138 - 2 * max(0.0, ext))   # el hombro de atrás empuja el golpe
         p["hd_r"] = (lerp(40, 27, ext), lerp(-140, -143, ext))      # la otra mano guarda bajo la barbilla, no sobre la cara
         p["chest"] = (2 + lean, -140)
         p["head"] = (4 + lean, -176)
         p["hip"] = (lean * 0.5, -95)
     elif anim == "hook":
-        p["hd_r"] = (lerp(40, 88, ext), lerp(-128, -150, ext))
-        p["el_r"] = (lerp(28, 70, ext), lerp(-118, -128, ext))
+        # gancho: codo a 90° levantado a la altura del hombro; el puño viaja en arco, no en línea
+        p["hd_r"] = (lerp(40, 68, ext), lerp(-140, -152, ext))
+        p["el_r"] = (lerp(28, 50, ext), lerp(-118, -136, ext))
+        p["sh_r"] = (8 + 6 * max(0.0, ext), -138 - 3 * max(0.0, ext))
+        p["hd_l"] = (lerp(26, 18, ext), lerp(-140, -152, ext))
+        p["el_l"] = (lerp(14, 8, ext), lerp(-118, -124, ext))
         p["chest"] = (2 + lean * 1.4, -138)
         p["head"] = (4 + lean * 1.4, -174)
         p["hip"] = (lean * 0.8, -93)
@@ -221,10 +238,11 @@ def _attack_shape(anim, base, ext, lean, fd, kick, ext_knee=None):
         p["ft_r"] = (lerp(28, 120, ext), -4)
         p["hd_l"] = (-20, -40)
     elif anim == "grab":
-        p["hd_l"] = (lerp(26, 80, ext), -138)
-        p["hd_r"] = (lerp(40, 84, ext), -118)
-        p["el_l"] = (lerp(14, 50, ext), -130)
-        p["el_r"] = (lerp(28, 56, ext), -116)
+        # agarre: manos a la solapa y a la manga con los codos doblados y bajos (no brazos de zombi)
+        p["hd_l"] = (lerp(26, 70, ext), lerp(-140, -142, ext))
+        p["hd_r"] = (lerp(40, 74, ext), lerp(-148, -120, ext))
+        p["el_l"] = (lerp(14, 40, ext), lerp(-118, -116, ext))
+        p["el_r"] = (lerp(28, 48, ext), lerp(-118, -100, ext))
         p["chest"] = (2 + lean, -140)
         p["head"] = (4 + lean, -176)
         p["hip"] = (lean * 0.6, -95)
@@ -269,8 +287,9 @@ def pose_hit(phase, fd):
     for s_ in ("l", "r"):                          # los hombros van con el pecho: si no, el brazo quedaba delante
         sx_, sy_ = p["sh_" + s_]
         p["sh_" + s_] = (sx_ - 13 * k, sy_ + 3 + 6 * k)
-    # brazos sueltos que el golpe despide hacia atrás, manos a la altura del pecho (no en jarras)
-    for s_, (ex, ey), (hx_, hy_) in (("l", (-4 - 4 * k, 26), (12 - 8 * k, 28)), ("r", (-2 - 6 * k, 27), (18 - 10 * k, 30))):
+    # la guardia se abre con el golpe: la mano delantera sube suelta hacia la cara y la de atrás queda al pecho,
+    # los codos sueltos (no manos en la cintura, que se leían en jarras)
+    for s_, (ex, ey), (hx_, hy_) in (("l", (6 - 4 * k, 22), (16 - 6 * k, 8)), ("r", (16 - 4 * k, 18), (22 - 8 * k, -2 - 6 * k))):
         sx_, sy_ = p["sh_" + s_]
         p["el_" + s_] = (sx_ + ex, sy_ + ey)
         p["hd_" + s_] = (sx_ + hx_, sy_ + hy_)
@@ -283,8 +302,9 @@ def pose_knock(phase, fd, airborne):
         return dict(hip=(0, -80), chest=(-30, -100), head=(-56, -112), sh_l=(-30, -100), sh_r=(-26, -96),
                     el_l=(-50, -120), el_r=(-44, -70), hd_l=(-70, -140), hd_r=(-60, -50),
                     kn_l=(30, -50), kn_r=(36, -70), ft_l=(60, -40), ft_r=(66, -70))
+    # tumbado: brazos inertes, uno a lo largo del cuerpo y el otro abierto en el suelo (no sobre la cabeza)
     return dict(hip=(0, -14), chest=(-40, -18), head=(-78, -16), sh_l=(-42, -22), sh_r=(-40, -12),
-                el_l=(-66, -32), el_r=(-62, -8), hd_l=(-90, -24), hd_r=(-84, -6),
+                el_l=(-54, -6), el_r=(-16, -6), hd_l=(-44, -2), hd_r=(8, -4),
                 kn_l=(34, -14), kn_r=(40, -22), ft_l=(70, -4), ft_r=(78, -14))
 
 

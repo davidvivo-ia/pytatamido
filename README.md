@@ -128,6 +128,12 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
 - **Guardia viva y aplastar y estirar:** el peso pasa de un pie a otro, los hombros ruedan a destiempo,
   las manos dibujan círculos y la cabeza llega tarde; el cuerpo se aplasta al aterrizar, se comprime en
   el eje del impacto y se estira hacia el rival en los fotogramas activos.
+- **Brazos de verdad:** el brazo mide lo que mide y no se estira; lo que no alcanza lo ponen el hombro que se
+  adelanta y la zancada, y el codo conserva un leve doblez al final del golpe. En el jab y el cross la otra
+  mano sube al mentón y el mentón se esconde tras el hombro; el gancho se da con el codo a 90°; el agarre
+  busca solapa y manga con los codos doblados; al encajar, la guardia se abre con las manos sueltas; en el
+  suelo los brazos quedan inertes a lo largo del cuerpo. La raíz del brazo sale según hacia dónde apunta
+  (antes el brazo extendido parecía nacer de la espalda).
 - **Golpes con curva de animación:** carga (el miembro y el cuerpo se recogen), disparo rápido que se pasa
   un 8 %, asentamiento en los fotogramas activos y vuelta sin prisa; en las patadas la rodilla sube antes
   que el pie (*chamber*). Al desplazarse en guardia la cadera baja en cada apoyo y el tronco se mece.

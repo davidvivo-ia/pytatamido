@@ -1180,8 +1180,12 @@ def _strike(f, J, B):
     hand = tip_w / sc - 5.6 * B["hand"] / 4.3
     sh = J["sh_" + side]
     U, F_ = B.get("arm", (30.0, 25.5))
-    natural = sh[0] + (U + F_) * 1.25 + 7.0
-    lunge = clamp((hand - natural) / 0.82, 0.0, 52.0) * ext
+    bent = m.anim == "hook"
+    if bent:
+        natural = J["hd_" + side][0]                    # el gancho llega con el codo doblado: lo pone la zancada
+    else:
+        natural = sh[0] + (U + F_) * 0.965 + 11.0      # brazo casi recto + hombro adelantado (arm_ik)
+    lunge = clamp((hand - natural) / 0.82, 0.0, 64.0) * ext
     if lunge > 0:
         for k, w in (("chest", 0.82), ("head", 0.82), ("sh_l", 0.82), ("sh_r", 0.82), ("el_l", 0.82), ("el_r", 0.82),
                      ("hd_l", 0.82), ("hd_r", 0.82), ("hip", 0.5)):
@@ -1191,8 +1195,8 @@ def _strike(f, J, B):
         J[fs] = (J[fs][0] + lunge * 0.85, J[fs][1])
         J[ks] = (J[ks][0] + lunge * 0.75, J[ks][1])
     hd = J["hd_" + side]
-    target = (hd[0] + (hand - hd[0]) * ext, hd[1])
-    J["hd_" + side] = target
+    if not bent:
+        J["hd_" + side] = (hd[0] + (hand - hd[0]) * ext, hd[1])
     return side, ext
 
 
@@ -1337,7 +1341,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         P = [(c_[0] + math.cos(a0 + a) * r_, c_[1] + math.sin(a0 + a) * r_) for a in
              [math.radians(v) for v in range(70, 291, 20)]]
         P.append((c_[0] + dx * r_ * 1.9, c_[1] + dy * r_ * 1.9))
-        fig.poly(g, P, col, outline=False, sheen=sheen, smooth=2)
+        fig.poly(g, P, col, outline=False, shade_=False, sheen=sheen, smooth=2)
         fig.merge_last()
 
     # ── piernas ──────────────────────────────────────────────────────────────
@@ -2302,7 +2306,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         px_, py_ = -fy_, fx_
         return lambda a, b: (hd[0] + fx_ * a + px_ * b, hd[1] + fy_ * a + py_ * b)
 
-    def arm_ik(sh, el0, hd0, stretch=1.2, pro_max=3.0):
+    def arm_ik(sh, el0, hd0, stretch=1.0, pro_max=3.0):
         """Brazo de huesos fijos (cinemática inversa de dos huesos). El esqueleto de poses coloca codo y mano
         libremente (de 30 a 85 cm de brazo según la pose); aquí el brazo y el antebrazo miden lo que miden,
         el codo dobla hacia donde lo pide la pose y, si la mano no llega, el hombro se adelanta y el brazo se
@@ -2311,7 +2315,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         dx, dy = hd0[0] - sh[0], hd0[1] - sh[1]
         D = math.hypot(dx, dy) or 1e-6
         ux, uy = dx / D, dy / D
-        reach = (U + F) * 0.985
+        reach = (U + F) * 0.965                        # el codo nunca se bloquea del todo: brazo de verdad, no palo
         if D > reach:                                  # protracción del hombro hacia el objetivo
             pro = min(pro_max, D - reach)
             sh = (sh[0] + ux * pro, sh[1] + uy * pro)
@@ -2336,8 +2340,9 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
 
     for side, g, depth in (("l", 0, 0.84), ("r", 6, 1.0)):
         hit_arm = strike is not None and strike[0] == side
+        # el brazo no se estira: lo que no alcanza lo pone el hombro que se adelanta y la zancada (_strike)
         sh, el, hd = arm_ik(J["sh_" + side], J["el_" + side], J["hd_" + side],
-                            *((1.2 + 0.05 * strike[1], 3.0 + 4.0 * strike[1]) if hit_arm else ()))
+                            *((1.0, 4.0 + 8.0 * strike[1]) if hit_arm else ()))
         fig.joints.update({"sh_" + side: sh, "el_" + side: el, "hd_" + side: hd})
         # smear: con el puño rápido, la silueta se estira entre donde estaba y donde está (1-2 fotogramas)
         was, speed = sec.motion("hd_" + side, hd)
@@ -2355,8 +2360,15 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         # raíz del brazo: hacia atrás y un poco hacia arriba, dentro del torso, para que la manga o el deltoides
         # cubran la parte alta del pecho y la espalda como un hombro, y no nazca un tubo pegado al borde
         # (el brazo de detrás ya queda tapado por el torso: su raíz va hacia dentro, no asoma por la espalda)
-        back_ = (-1.0, 0.12) if side == "r" else (0.55, 0.2)
-        cap = (sh[0] + back_[0] * B["delt"] * 1.05, sh[1] + back_[1] * B["delt"] * 1.05)
+        if side == "r":
+            # la raíz va al lado contrario del brazo y hacia arriba: con el brazo colgando es la cúpula del
+            # hombro; con el brazo al frente queda encima del hombro, no en la espalda (el brazo salía de detrás)
+            ux_, uy_ = _norm(el[0] - sh[0], el[1] - sh[1])
+            vx_, vy_ = _norm(-ux_ * 0.6 + up_[0] * 0.55 - nx * 0.45, -uy_ * 0.6 + up_[1] * 0.55 - ny * 0.45)
+            cap = (sh[0] + vx_ * B["delt"] * 1.05, sh[1] + vy_ * B["delt"] * 1.05)
+        else:
+            back_ = (0.55, 0.2)
+            cap = (sh[0] + back_[0] * B["delt"] * 1.05, sh[1] + back_[1] * B["delt"] * 1.05)
         # sin salirse de la espalda: con el hombro echado atrás (el cross del otro brazo) asomaba como un bulto
         s0 = S(0.84, 0.0)
         lim = -(wb(0.84) - B["delt"] * 0.85)
