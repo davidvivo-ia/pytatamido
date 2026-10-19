@@ -580,7 +580,7 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float br2 = vnoise(vec2(q.x * 0.45, q.y * 2.1) + seed * 5.7) * vis(0.5, pxcm);
     // ── rampa de dos tonos (anime 2026): borde pintado, sombra de color desplazado ──
     // la piel lleva un terminador más suave y casi sin pincelada: en una cara el borde roto se leía como suciedad
-    float soft = mat == 1 ? 0.22 : 0.09;
+    float soft = mat == 1 ? 0.22 : 0.12;
     float term = ndl + paint * ((br - 0.5) * (mat == 1 ? 0.05 : 0.16) + (br2 - 0.25) * (mat == 1 ? 0.02 : 0.05));
     float shadowSelf = mat == 6 ? 1. : selfShadow(p, L, pxcm);
     if (uDebugN > 1.5) return toLin(uDebugN > 2.5 ? vec3(fract(figHeight(p, 0.3 * pxcm) / (60. * pxcm))) : vec3(shadowSelf)) / max(uTint, vec3(0.05));

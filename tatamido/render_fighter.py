@@ -868,11 +868,11 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                 P = [T(q) for q in pts]
                 if len(P) >= 2:
                     # surco: pliegue o músculo ancho y poco profundo (una arruga, no un corte)
-                    gd = 12 if mat == "skin" else 8
+                    gd = 12 if mat == "skin" else 6
                     # los rasgos de la cara (ojos, boca, arrugas) no tienen relieve: alzados proyectan rayas de sombra
                     flat = g == 5 and mat in ("skin", "eye")
                     val = (max(0, h0 - gd), pid, spec) if groove else (h0 + (0 if flat else 4), pid, spec)
-                    wpx = max(1.0, w * k * ((2.2 if mat == "skin" else 2.8) if groove else 1.0))
+                    wpx = max(1.0, w * k * ((2.2 if mat == "skin" else 2.3) if groove else 1.0))
                     if pf is not None and not groove:
                         bp = pf if inv == 1.0 else [(x * inv, y * inv) for x, y in pf]
                     else:
@@ -1004,7 +1004,7 @@ def _neck_len(fd):
         try:
             p = _stance(fd)
             c0, h0 = p["chest"], p["head"]
-            _NECK[key] = math.hypot(h0[0] - c0[0], h0[1] - c0[1]) * (0.64 - 0.15) * 0.94
+            _NECK[key] = math.hypot(h0[0] - c0[0], h0[1] - c0[1]) * (0.64 - 0.15) * 0.86   # cuello de luchador: corto
         except Exception:
             _NECK[key] = 16.5
     return _NECK[key]
@@ -1367,8 +1367,8 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         dk = shade(col, 0.8)
         off = lambda p, n, d: (p[0] + n[0] * d, p[1] + n[1] * d)
         # corva: dos o tres pliegues que nacen del doblez, más largos cuanto más se dobla
-        if flex > 0.12:
-            for i, (u, w_) in enumerate(((0.0, 0.9), (-0.16, 0.7), (0.16, 0.6))):
+        if flex > 0.25:
+            for i, (u, w_) in enumerate(((0.0, 0.5), (-0.16, 0.4), (0.16, 0.35))):
                 if i == 2 and flex < 0.45:
                     break
                 c0 = off(_lerp2(H, kn, 1.0 + u * 0.5 - 0.08), nl1, s_in * rk * (0.5 + 0.1 * i))
@@ -1535,8 +1535,10 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         elif bottom == "singlet":
             fig.m("satin")
             e = _lerp2(H, kn, 0.32)
-            fig.ribbon(g, [H, _lerp2(H, e, 0.5), e], [(0, th0 + 0.7), (1, th0 + 0.3)], [(0, th0 + 0.6), (1, th0 + 0.3)],
-                       C(cloth, x_m, depth), sheen=1.8, edge=True)
+            # la pernera delantera va por encima del cuerpo de la prenda: tapa su bajo y el singlet es una pieza
+            top_ = _lerp2(H, Cc, 0.12)
+            fig.ribbon(4 if g == 3 else g, [top_, H, _lerp2(H, e, 0.5), e], [(0, th0 * 0.9), (0.3, th0 + 0.35), (1, th0 + 0.1)],
+                       [(0, th0 * 0.9), (0.3, th0 + 0.3), (1, th0 + 0.1)], C(cloth, x_m, depth), sheen=1.8, edge=True)
             fig.m("leather", pat="neoprene")
             pad = [_lerp2(kn, H, 0.12), kn, _lerp2(kn, ankle, 0.12)]
             fig.ribbon(g, pad, [(0, ca0 + 1.3), (0.5, ca0 + 1.9), (1, ca0 + 1.3)], [(0, ca0 + 1.6), (0.5, ca0 + 2.3), (1, ca0 + 1.6)],
@@ -1613,7 +1615,17 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         jc = C(cloth, tx)
         F = [S(t, w) for t, w in zip(ts, fr)]
         K = [S(t, -w) for t, w in zip(ts, bk)]
-        fig.poly(4, F + K[::-1], jc, sheen=0.5, edge=True, smooth=2)
+        if top != "keikogi":
+            # el faldón cuelga del cinturón por su peso (no sigue el eje del tronco, que lo abombaba como un
+            # saco): recto, con un vuelo leve y el bajo casi horizontal; tumbado, vuelve a seguir al cuerpo
+            upr = clamp(-up_[1], 0.0, 1.0) * 0.75
+            dx_, dy_ = _norm(-up_[0] * (1 - upr), -up_[1] * (1 - upr) + upr)
+            sl = (0.17 - skirt[0]) * L
+            for lst, sg, fl in ((F, 1.0, 2.2), (K, -1.0, 1.6)):
+                b_ = S(0.17, sg * ((wf(0.17) if sg > 0 else wb(0.17)) + grow))
+                lst[0] = (b_[0] + dx_ * sl + nx * sg * fl, b_[1] + dy_ * sl + ny * sg * fl)
+                lst[1] = (b_[0] + dx_ * sl * 0.55 + nx * sg * fl * 0.5, b_[1] + dy_ * sl * 0.55 + ny * sg * fl * 0.5)
+        fig.poly(4, F + K[::-1], jc, sheen=0.5, edge=True, smooth=1)
         yoke(4, jc, "cloth", grow=grow * 0.6)
         fig.m("cloth")
         # pliegues de la tela que responden al cuerpo: del cinturón a la axila del brazo que golpea (tensión),
@@ -1714,13 +1726,15 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     elif top == "singlet":
         fig.m("satin")
         tc = C(cloth, tx)
-        ts = [-0.1, 0.0, 0.12, 0.28, 0.45, 0.62, 0.74]
-        F = [S(t, wf(t) + 0.7) for t in ts]
-        K = [S(t, -(wb(t) + 0.7)) for t in ts]
+        # lycra ceñida: termina en la cadera (las perneras van en cada pierna); antes bajaba en falda
+        ts = [-0.06, 0.04, 0.12, 0.28, 0.45, 0.62, 0.74]
+        F = [S(t, wf(t) + 0.4) for t in ts]
+        K = [S(t, -(wb(t) + 0.4)) for t in ts]
+        K[0] = S(-0.16, -(wb(-0.16) + 0.4))           # por detrás cubre el glúteo
         fig.poly(4, F + K[::-1], tc, sheen=2.0, edge=True)
         fig.line(4, [S(0.74, wf(0.74) * 0.5), S(1.0, wf(1.0) * 0.5)], tc, 2.2)
         fig.line(4, [S(0.74, -wb(0.74) * 0.6), S(1.0, -wb(1.0) * 0.5)], tc, 2.2)
-        fig.line(4, [S(-0.08, 0.0), S(0.72, 0.0)], C(lk["accent"], tx), 1.6)
+        fig.line(4, [S(-0.04, 0.0), S(0.72, 0.0)], C(lk["accent"], tx), 1.6)
 
     # partes bajas que se ven sobre la cadera
     fig.zone(cloth=bot_pat, satin=bot_pat)
@@ -1746,6 +1760,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     elif bottom == "track":
         fig.m("satin")
         fig.poly(4, band(-0.12, 0.06, 2.4, 2.4), C(lk["pants"], tx), sheen=0.8, edge=True)
+
     elif bottom == "mawashi":
         fig.m("satin")
         mc = C(cloth, tx)
@@ -1802,7 +1817,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
 
     # ── cuello y cabeza (grupo 5) ────────────────────────────────────────────
     fig.zone(cloth="rib")
-    R = B["head"]
+    R = B["head"] * 1.06            # cabeza algo mayor que la anatómica: a escala de juego la cara se lee
     ang = math.atan2(Hd[0] - Cc[0], -(Hd[1] - Cc[1]))
 
     def HP(x, y):
@@ -1841,8 +1856,13 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         _ = prev
     fig.m("skin")
     neck_end = HP(-0.2, 0.5)
-    nr = B["neck"]
-    fig.tube(5, N, neck_end, nr * 1.05, nr, C(skin, N[0]), sheen=skin_sheen)
+    nr = B["neck"] * (1.0 if lk["body"] in ("atleta_f", "menuda") else 1.12)
+    fig.tube(5, N, neck_end, nr * 1.12, nr, C(skin, N[0]), sheen=skin_sheen)
+    # esternocleidomastoideo: de detrás de la oreja al esternón, el músculo que da cuello de luchador
+    fig.bump(5, _lerp2(HP(-0.05, 0.42), N, 0.45), dist(HP(-0.05, 0.42), N) * 0.5, nr * 0.32,
+             math.atan2(N[1] - HP(-0.05, 0.42)[1], N[0] - HP(-0.05, 0.42)[0]), 4, skin_sheen)
+    if lk["body"] not in ("atleta_f", "menuda"):
+        fig.bump(5, _lerp2(HP(0.35, 0.72), N, 0.35), nr * 0.3, nr * 0.22, 0.0, 3, skin_sheen)            # nuez
     if lk["body"] == "sumo":
         fig.tube(5, N, HP(0.3, 0.8), nr * 1.1, nr * 0.9, C(skin, N[0]), sheen=skin_sheen)
     # impacto: los primeros fotogramas del golpe aplastan la mejilla y empujan la mandíbula hacia atrás
@@ -2026,10 +2046,11 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         a0 = -98 if hair == "mono" else -62
         fig.poly(5, arc(r_, a0, -212) + cap_inner, base_c, sheen=0.8, edge=True)
     elif hair == "rapado":
-        fig.poly(5, arc(1.02, -62, -212) + cap_inner, mixc(face_c, hair_c, 0.45), outline=False, sheen=0.3)
-        fig.m("hair", True)
-        for a in range(-70, -205, -18):                                         # nacimiento del pelo rapado
-            fig.dot(5, polar(0.9, a), 0.05 * R, shade(hair_c, 0.9))
+        # rapado al uno: es piel con sombra de pelo, no un casco; el nacimiento se funde en dos tonos
+        fig.m("skin")
+        fig.poly(5, arc(1.0, -62, -212) + cap_inner, mixc(face_c, hair_c, 0.22), outline=False, sheen=0.5)
+        fig.poly(5, arc(0.97, -70, -205) + [HP(-0.6, 0.3), HP(-0.42, 0.06), HP(-0.16, -0.32), HP(0.14, -0.66), HP(0.36, -0.8)],
+                 mixc(face_c, hair_c, 0.32), outline=False, sheen=0.5)
         fig.m("hair")
     elif hair == "melena":
         pts = [HP(0.8, -0.34), HP(0.74, -0.86)] + arc(1.13, -55, -195) + [HP(-1.08, 0.8), HP(-0.42, 0.88), HP(-0.3, 0.32), HP(0.1, -0.06), HP(0.46, -0.3)]
@@ -2050,9 +2071,12 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         # recogido: mechones largos desde el nacimiento del pelo, por encima del cráneo, hacia el moño o la coleta
         tie = {"coleta": (-0.78, -0.72), "trenza": (-0.9, -0.15), "trenza_nuca": (-0.95, 0.2), "chonmage": (-0.4, -1.0),
                "mono": (-0.82, -0.8)}[hair]
+        ta = math.degrees(math.atan2(tie[1] + 0.05, tie[0] + 0.08))
+        if ta > 0:
+            ta -= 360.0              # la nuca queda por detrás: sin esto el punto medio caía en la cara
         for i, a in enumerate((-58, -72, -86, -100, -114, -128)):
             b_ = polar(1.0, a)
-            mid = polar(1.06, (a + math.degrees(math.atan2(tie[1] + 0.05, tie[0] + 0.08))) * 0.5)
+            mid = polar(1.06, (a + ta) * 0.5)
             strand(b_, mid, HP(tie[0] + 0.05 * (i % 2), tie[1] + 0.03 * i), 0.26, sheen=1.8)
         # mechones sueltos en la sien y el flequillo
         if hair != "chonmage" and hair != "mono":
@@ -2116,7 +2140,15 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         beard = [HP(0.9, 0.36), HP(0.95, 0.5), HP(0.9, 0.7), HP(0.76, 0.92), HP(0.48, 1.0), HP(0.08, 0.86), HP(-0.14, 0.56),
                  HP(-0.16, 0.34), HP(0.1, 0.42), HP(0.5, 0.56), HP(0.7, 0.44)]
         fig.poly(5, beard, hair_c, sheen=0.4, edge=True)
+        # volumen: mechones que rompen el borde de la barba hacia abajo y la sombra bajo el bigote
+        lock_i[0] = 0
+        for i, (bx, by) in enumerate(((0.86, 0.68), (0.72, 0.86), (0.54, 0.95), (0.34, 0.94), (0.14, 0.82), (-0.04, 0.62))):
+            strand(HP(bx - 0.06, by - 0.2), HP(bx - 0.02, by - 0.05), HP(bx - 0.04 - 0.02 * i, by + 0.1), 0.1, sheen=0.5)
+        fig.m("hair", True)
+        fig.line(5, [HP(0.1, 0.46), HP(0.42, 0.6), HP(0.66, 0.5)], shade(hair_c, 0.7), 0.03 * R)          # carrillo
+        fig.m("hair")
         fig.poly(5, [HP(0.72, 0.47), HP(0.9, 0.47), HP(0.88, 0.53), HP(0.74, 0.54)], (80, 34, 30), outline=False, shade_=False)
+        fig.poly(5, lock_pts(HP(0.66, 0.44), HP(0.82, 0.37), HP(0.95, 0.45), 0.09 * R), shade(hair_c, 1.05), smooth=0)  # bigote
     fig.m("hair")
     if "bigote" in ex:
         fig.line(5, [HP(0.66, 0.42), HP(0.8, 0.37), HP(0.94, 0.38)], hair_c, 0.06 * R)
