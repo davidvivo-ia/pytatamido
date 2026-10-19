@@ -114,6 +114,15 @@ def pose_walk(t, fd, back=False):
     p["kn_r"] = (st["kn_r"][0] - 14 * s, st["kn_r"][1] - 2 - 6 * abs(c))
     p["ft_l"] = (st["ft_l"][0] + 22 * s, -6 * max(0, c))
     p["ft_r"] = (st["ft_r"][0] - 22 * s, -6 * max(0, -c))
+    # desplazamiento en guardia: la cadera baja en cada apoyo, el tronco se mece con el paso y las manos
+    # van a contratiempo, sin abrir la guardia
+    bob = 2.2 * (1.0 - abs(c))
+    sway = 2.0 * s
+    for k in ("hip", "chest", "head", "sh_l", "sh_r", "el_l", "el_r", "hd_l", "hd_r"):
+        w = 0.6 if k == "hip" else 1.0
+        p[k] = (p[k][0] + sway * w, p[k][1] + bob)
+    for k, sg in (("hd_l", 1.0), ("hd_r", -1.0)):
+        p[k] = (p[k][0] - 1.6 * s * sg, p[k][1] + 1.2 * c * sg)
     return p
 
 
@@ -139,12 +148,25 @@ def pose_jump(t, fd, vy):
                 kn_l=(-6, -60 - 20 * tuck), kn_r=(20, -60 - 24 * tuck), ft_l=(-14, -24 * tuck), ft_r=(24, -30 * tuck))
 
 
+def strike_curve(phase):
+    """Curva de un golpe: carga (el miembro y el cuerpo se recogen), disparo rápido que se pasa un 8 %,
+    asentamiento en los fotogramas activos y vuelta a la guardia sin prisa. phase 0..1."""
+    if phase < 0.12:
+        return -0.14 * smoothstep(phase / 0.12)
+    if phase < 0.36:
+        u = (phase - 0.12) / 0.24
+        return -0.14 + 1.22 * (1.0 - (1.0 - u) ** 3)
+    if phase < 0.5:
+        return 1.08 - 0.08 * smoothstep((phase - 0.36) / 0.14)
+    return 1.0 - smoothstep((phase - 0.5) / 0.5)
+
+
 def pose_attack(anim, phase, fd, kick=False):
     """phase 0..1 dentro del movimiento: startup (0..0.35), activo (..0.55), recovery."""
     base = pose_idle(0, fd, 0)
-    ext = smoothstep(phase / 0.4) if phase < 0.4 else (1 - smoothstep((phase - 0.5) / 0.5)) if phase > 0.5 else 1.0
+    ext = strike_curve(phase)
     lean = 10 * ext
-    p = _attack_shape(anim, base, ext, lean, fd, kick)
+    p = _attack_shape(anim, base, ext, lean, fd, kick, ext_knee=strike_curve(min(1.0, phase + 0.07)))
     # las animaciones están escritas sobre la guardia estándar: lo que se aplica es su desplazamiento sobre la
     # guardia propia de cada luchador, que conserva su postura (el sumo agachado, la capoeira baja) en todo el
     # golpe en vez de enderezarse a la forma escrita en el impacto
@@ -155,8 +177,9 @@ def pose_attack(anim, phase, fd, kick=False):
     return p
 
 
-def _attack_shape(anim, base, ext, lean, fd, kick):
+def _attack_shape(anim, base, ext, lean, fd, kick, ext_knee=None):
     p = dict(base)
+    ek = ext if ext_knee is None else ext_knee           # en las patadas la rodilla sube antes que el pie (chamber)
     if anim == "jab":
         p["hd_r"] = (lerp(40, 92, ext), -138)
         p["el_r"] = (lerp(28, 60, ext), -132)
@@ -178,14 +201,14 @@ def _attack_shape(anim, base, ext, lean, fd, kick):
         p["kn_r"] = (16 + lean, -50)
         p["ft_r"] = (22 + lean * 1.2, 0)
     elif anim == "kick_mid":
-        p["kn_r"] = (lerp(16, 60, ext), lerp(-50, -95, ext))
+        p["kn_r"] = (lerp(16, 60, ek), lerp(-50, -95, ek))
         p["ft_r"] = (lerp(22, 118, ext), lerp(0, -100, ext))
         p["hip"] = (-6 * ext, -95)
         p["chest"] = (-10 * ext, -140)
         p["head"] = (-12 * ext, -176)
         p["hd_l"] = (lerp(26, 12, ext), lerp(-140, -137, ext))     # la guardia acompaña al cuerpo que se echa atrás
     elif anim == "kick_high":
-        p["kn_r"] = (lerp(16, 50, ext), lerp(-50, -120, ext))
+        p["kn_r"] = (lerp(16, 50, ek), lerp(-50, -120, ek))
         p["ft_r"] = (lerp(22, 108, ext), lerp(0, -160, ext))
         p["hip"] = (-10 * ext, -95)
         p["chest"] = (-18 * ext, -138)
@@ -215,7 +238,7 @@ def _attack_shape(anim, base, ext, lean, fd, kick):
             p["el_r"] = (lerp(26, 60, ext), -124)
     elif anim == "special":
         if kick:
-            p["kn_r"] = (lerp(16, 40, ext), lerp(-50, -130, ext))
+            p["kn_r"] = (lerp(16, 40, ek), lerp(-50, -130, ek))
             p["ft_r"] = (lerp(22, 120, ext), lerp(0, -150, ext))
             p["hip"] = (-14 * ext, -95)
             p["chest"] = (-26 * ext, -136)

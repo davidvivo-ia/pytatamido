@@ -56,7 +56,11 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
   boca a la vez: foco, ferocidad, grito, esfuerzo con los dientes, dolor con los ojos apretados, sonrisa,
   jadeo y KO. Los rasgos comparten pieza y altura con la cara, así no proyectan rayas de sombra.
 - **Pelo por mechones:** base más oscura y mechones con su eje y su tono para cada peinado (corto,
-  recogido, melena, rizado, rastas, rapado, chonmage, coleta, trenzas).
+  recogido, melena, rizado, rastas, chonmage, coleta, trenzas) que van por el cráneo hasta el atado; el
+  rapado es piel con sombra de pelo y la barba tiene mechones que rompen su borde.
+- **Proporciones de luchador:** cabeza algo mayor que la anatómica para que la cara se lea, cuello corto y
+  grueso con esternocleidomastoideo y nuez; el faldón del judogi cuelga por su peso y el singlet es de una
+  pieza.
 - **Manos y pies:** manos un 8 % mayores con nudillos y metacarpos en relieve, uñas, garra al hacer presa
   y vendas de muay thai en Somchai (muñeca, cruce en X por el dorso y vuelta sobre los nudillos); pies
   descalzos con arco, dedo gordo con uña, dedos de detrás, maléolo y bola del pie.
@@ -115,6 +119,9 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
 - **Guardia viva y aplastar y estirar:** el peso pasa de un pie a otro, los hombros ruedan a destiempo,
   las manos dibujan círculos y la cabeza llega tarde; el cuerpo se aplasta al aterrizar, se comprime en
   el eje del impacto y se estira hacia el rival en los fotogramas activos.
+- **Golpes con curva de animación:** carga (el miembro y el cuerpo se recogen), disparo rápido que se pasa
+  un 8 %, asentamiento en los fotogramas activos y vuelta sin prisa; en las patadas la rodilla sube antes
+  que el pie (*chamber*). Al desplazarse en guardia la cadera baja en cada apoyo y el tronco se mece.
 - **Física de muelle:** coleta, trenzas, rastas, flequillo, mongkol, cinturón, cordón de capoeira y sagari
   del mawashi son muelles amortiguados movidos por la velocidad real de la cabeza y la cadera: se quedan
   atrás, se pasan al frenar y oscilan hasta asentarse.
