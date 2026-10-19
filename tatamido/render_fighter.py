@@ -975,6 +975,14 @@ BASE_EXPR = {"contenida": "foco", "seria": "foco", "concentrada": "foco", "feroz
              "serena": "calma", "sonrisa": "sonrisa", "picara": "picara"}
 
 
+def _soft_spot(fig, g, c, r, base, target, amt, rings=5):
+    """Mancha de color con el borde fundido (rubor, moratón): anillos que se acercan al color de destino hacia
+    el centro. Un disco de un solo color se leía como una pegatina, sobre todo con luz fría."""
+    for i in range(rings):
+        f = 1.0 - i / rings
+        fig.dot(g, c, r * f, mixc(base, target, amt * (i + 1) / rings))
+
+
 def _expression(f, look):
     st = f.state
     if st == Fighter.KO:
@@ -1464,7 +1472,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                 v_ = (getattr(f, "marks", None) or {}).get("espinilla", 0.0)
                 if v_ > 0.05 and side == "r":
                     sc_ = _lerp2(kn, ankle, 0.42)
-                    fig.dot(g, (sc_[0] + ldy * cf_ * 0.5, sc_[1] - ldx * cf_ * 0.5), 2.0 + v_, mixc(sk, (110, 70, 105), 0.12 + 0.2 * v_))
+                    _soft_spot(fig, g, (sc_[0] + ldy * cf_ * 0.5, sc_[1] - ldx * cf_ * 0.5), 2.4 + v_, sk, (110, 70, 105), 0.1 + 0.18 * v_)
         # pie
         def F_(a, b, toe=11.0):
             # la parte de los dedos (a > toe) vuelve a quedar plana en el suelo cuando el talón está subido
@@ -1974,7 +1982,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         fig.line(5, [HP(0.86, 0.3), HP(0.81, 0.38), HP(0.76, 0.47)], shade(face_c, 0.86), 0.02 * R)
     fig.m("skin")
     if "rubor" in ex or red > 0.05:
-        fig.dot(5, HP(0.58, 0.2), 0.13 * R, mixc(face_c, (215, 110, 100), 0.1 + 0.25 * red))
+        _soft_spot(fig, 5, HP(0.58, 0.2), 0.15 * R, face_c, (215, 110, 100), 0.08 + 0.2 * red)
     # boca
     lip_c = mixc(face_c, (176, 72, 72), 0.3)
     line_c = shade(face_c, 0.52)
@@ -2198,7 +2206,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     v = marks.get("pomulo", 0.0)
     if v > 0.05:
         fig.m("skin")
-        fig.dot(5, HP(0.56, 0.12), (0.12 + 0.05 * v) * R, mixc(face_c, (112, 72, 112), 0.12 + 0.22 * v))
+        _soft_spot(fig, 5, HP(0.56, 0.12), (0.13 + 0.05 * v) * R, face_c, (112, 72, 112), 0.1 + 0.2 * v)
         fig.bump(5, HP(0.56, 0.1), 0.16 * R, 0.12 * R, 0.0, 3 * v, skin_sheen)                     # hinchazón
     v = marks.get("ceja", 0.0)
     if v > 0.05:
@@ -2208,7 +2216,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     v = marks.get("costillas", 0.0)
     if v > 0.05 and top == "none":
         fig.m("skin")
-        fig.dot(2, S(0.5, wf(0.5) * 0.45), 3.0 + 1.5 * v, mixc(sk_t, (110, 70, 105), 0.1 + 0.2 * v))
+        _soft_spot(fig, 2, S(0.5, wf(0.5) * 0.45), 3.5 + 1.5 * v, sk_t, (110, 70, 105), 0.08 + 0.18 * v)
     if sweat > 0.45:
         # gotas en la frente y la sien: puntos de brillo sobre la piel, más cuanto más sudor
         fig.m("skin")

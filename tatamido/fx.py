@@ -65,7 +65,7 @@ class Effects:
         pts = []
         n = 14
         ang = random.uniform(-0.6, 0.6)
-        dx = facing * random.choice([1, -1])
+        dx = facing                    # sigue al golpe, por detrás de quien lo recibe: hacia atrás cruzaba la cara del atacante
         for i in range(n):
             t = i / (n - 1)
             px = x + dx * t * 150 * size + math.sin(t * 5 + ang) * 18 * size
@@ -73,10 +73,11 @@ class Effects:
             pts.append((px, py, (1 - t) ** 1.3 * 16 * size + 1))
         self.inks.append(dict(pts=pts, life=0, max=random.randint(34, 50), drift=random.uniform(-0.3, 0.3)))
         # salpicaduras
-        for _ in range(int(8 * size)):
+        for _ in range(int(6 * size)):
+            # gotas pequeñas que salen despedidas (las grandes y redondas manchaban caras y piernas como discos)
             a = random.uniform(0, math.pi * 2)
-            d = random.uniform(20, 90) * size
-            self.inks.append(dict(pts=[(x + math.cos(a) * d, y + math.sin(a) * d * 0.6, random.uniform(2, 6) * size)], life=0, max=random.randint(26, 40), drift=0))
+            d = random.uniform(40, 110) * size
+            self.inks.append(dict(pts=[(x + math.cos(a) * d, y + math.sin(a) * d * 0.6, random.uniform(0.8, 2.2) * size)], life=0, max=random.randint(26, 40), drift=0))
 
     def enso(self, x, y, r=130):
         """Círculo ensō tras el Muro de puños de Inés."""
@@ -157,9 +158,16 @@ class Effects:
         for k in self.inks:
             t = k["life"] / k["max"]
             a = int(235 * (1 - t) ** 1.5)
-            for x, y, th in k["pts"]:
-                sx, sy = cam.P(x, y)
-                pygame.draw.circle(layer, (16, 12, 14, a), (int(sx), int(sy)), max(1, int(cam.S(th) * (1 + 0.3 * t))))
+            pts = [(*cam.P(x, y), max(1.0, cam.S(th) * (1 + 0.3 * t))) for x, y, th in k["pts"]]
+            # trazo continuo: entre punto y punto, sellos a menos de medio radio (antes quedaban discos sueltos)
+            for (x0, y0, r0), (x1, y1, r1) in zip(pts, pts[1:]):
+                n = max(1, int(math.hypot(x1 - x0, y1 - y0) / max(1.0, min(r0, r1) * 0.45)))
+                for j in range(n):
+                    u = j / n
+                    pygame.draw.circle(layer, (16, 12, 14, a), (int(x0 + (x1 - x0) * u), int(y0 + (y1 - y0) * u)),
+                                       max(1, int(r0 + (r1 - r0) * u)))
+            x_, y_, r_ = pts[-1]
+            pygame.draw.circle(layer, (16, 12, 14, a), (int(x_), int(y_)), max(1, int(r_)))
 
     def draw_screen(self, surf, fonts, reduce_flash=False):
         fonts = fonts.at(surf)
