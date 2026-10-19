@@ -58,6 +58,15 @@ Cada luchador se dibuja con anatomía propia y no con cápsulas (`tatamido/anato
 - **Pelo por mechones:** base más oscura y mechones con su eje y su tono para cada peinado (corto,
   recogido, melena, rizado, rastas, chonmage, coleta, trenzas) que van por el cráneo hasta el atado; el
   rapado es piel con sombra de pelo y la barba tiene mechones que rompen su borde.
+- **Sin tubos:** las puntas del cinturón, el delantal del mawashi, la cola del mongkol y el pañuelo son
+  bandas planas que se giran de canto (`Figure.strap`), no cilindros; el cuello nace ancho en el trapecio y
+  se estrecha en garganta y nuca; el deltoides y la raíz de la manga comparten volumen con el brazo (antes
+  eran una rótula de muñeco encima); la tela tiene sección más plana que la piel y pliegues a lo largo que
+  rompen el cilindro, y los músculos tienen más relieve.
+- **Texturas que se leen:** el tejido tiene casi el doble de contraste cuando hay píxeles para verlo, la tela
+  lleva variación de tinte y lavado de 10-20 cm, costuras a lo largo de mangas, perneras y costados con su
+  pespunte, la piel matices suaves en vez de plástico, el borde de sombra de la tela es limpio y el
+  cinturón negro se gasta en los cantos y en hebras largas que dejan ver el alma blanca.
 - **Proporciones de luchador:** cabeza algo mayor que la anatómica para que la cara se lea, cuello corto y
   grueso con esternocleidomastoideo y nuez; el faldón del judogi cuelga por su peso y el singlet es de una
   pieza.

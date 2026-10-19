@@ -310,6 +310,7 @@ class Figure:
         self.parts: List[tuple] = []
         self.pats: List[int] = []
         self.joints: dict = {}            # articulaciones finales (tras la cinemática inversa): tests de huesos
+        self.merged: set = set()          # piezas que comparten volumen con la anterior (deltoides sobre el brazo)
         self.mat = "cloth"
         self.pat = "cotton"
         self.groove = False
@@ -330,6 +331,10 @@ class Figure:
 
     def tube(self, g, a, b, ra, rb, color, bulge=0.0, bt=0.45, side=0.0, outline=True, shade_=True, sheen=1.0, edge=False):
         self._add(g, "tube", (a, b, ra, rb, bulge, bt, side), color, outline, shade_, sheen, edge)
+
+    def merge_last(self):
+        """La última pieza añadida es parte de la anterior: misma pieza para la GPU, un solo volumen."""
+        self.merged.add(len(self.parts) - 1)
 
     def ribbon(self, g, C, keys_l, keys_r, color, outline=True, shade_=True, sheen=1.0, edge=False):
         """Miembro continuo por una spline: C son las articulaciones; keys_* perfiles [(u, radio)]."""
@@ -352,6 +357,24 @@ class Figure:
     def dot(self, g, c, r, color):
         self._add(g, "dot", (c, r), color, False, False, 0.0, False, self.groove)
 
+    def strap(self, g, pts, w, color, twist=0.0, sheen=0.6, edge=False, per=5):
+        """Banda plana de tela (punta de cinturón, cinta, delantal): ancho constante que se estrecha donde la
+        banda se gira de canto (`twist`, medias vueltas a lo largo) y remate recto. Un tubo de radio constante
+        se leía como un cable, no como tela."""
+        P = catmull(pts, per) if len(pts) > 2 else list(pts)
+        n = len(P)
+        if n < 2:
+            return
+        L_, R_ = [], []
+        for i, (x, y) in enumerate(P):
+            a, b = P[max(0, i - 1)], P[min(n - 1, i + 1)]
+            tx, ty = _norm(b[0] - a[0], b[1] - a[1])
+            u = i / (n - 1)
+            hw = w * 0.5 * (0.3 + 0.7 * abs(math.cos(twist * math.pi * u)))
+            L_.append((x - ty * hw, y + tx * hw))
+            R_.append((x + ty * hw, y - tx * hw))
+        self.poly(g, L_ + R_[::-1], color, sheen=sheen, edge=edge, smooth=0)
+
     def gloss(self, g, c, r, sheen):
         """Zona de brillo (frente, nariz, pómulo, hombro, nudillos): no se pinta en color; en el mapa de datos
         sube el brillo de la piel que ya hay debajo, sin tocar la altura."""
@@ -360,7 +383,7 @@ class Figure:
     def bump(self, g, c, ra, rb, ang, h, sheen):
         """Relieve suave (vientre de un músculo): sólo en el mapa de datos, anillos elípticos de altura creciente
         hacia el centro sobre la pieza de debajo. `ra` a lo largo de `ang`, `rb` de través, `h` en unidades de altura."""
-        self._add(g, "bump", (c, ra, rb, ang, h), (0, 0, 0), False, False, sheen, False, False)
+        self._add(g, "bump", (c, ra, rb, ang, h * 1.5), (0, 0, 0), False, False, sheen, False, False)   # que la luz lo dibuje
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -799,7 +822,9 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
             spec = int(clamp(sheen * 55, 0, 255))
             pf = shared.get(("f", idx)) if shared is not None else None
             pid2 = None
-            if groove or kind in ("gloss", "bump"):
+            if idx in fig.merged and state["body"]:
+                pid = state.get("ribbon0") or state["body"]       # el tramo de arriba del brazo o de la manga
+            elif groove or kind in ("gloss", "bump"):
                 pid = state["body"] or state["last"]
             elif kind in ("line", "dot") and state["body"] and state["body_mat"] == mat:
                 pid = state["body"]           # trazos y puntos del mismo material: no gastan entrada en la tabla
@@ -823,6 +848,7 @@ def _render_data(fig: Figure, surf, T, k, ow, fac=1, shared=None, inv=1.0, id_ba
                     ids.append(piece((cx, cy), ang, rr, mat, pat, idx + 1000 * len(ids)))
                 pid = ids[0]
                 pid2 = (ids[1], mcut, len(P)) if len(ids) > 1 else None
+                state["ribbon0"] = ids[0]
             elif kind == "poly" and g == 5 and not outline and mat in ("skin", "eye") and state["body"] and state["body_mat"] == "skin":
                 pid = state["body"]           # rasgos de la cara (ojo, párpado, boca, oreja): parte de la cara, sin cúpula propia
             elif kind == "poly":
@@ -1293,14 +1319,26 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             fig.poly(g, pts, col, sheen=sheen, smooth=2)
             yokes[sh] = (pts, col, mat, sheen, pat)
 
-    def shoulder_patch(g, sh, cap):
+    def shoulder_patch(g, sh, cap, el=None):
         """Sobre la raíz del brazo: un disco del color del canesú, sin contorno, en el remate redondo de la manga
         (o del deltoides). Tapa la costura interior sin tocar la silueta ni, al echar la cabeza atrás, el cuello."""
         if sh not in yokes:
             return
         pts, col, mat, sheen, pat = yokes[sh]
         fig.m(mat, pat=pat)
-        fig.circle(g, _lerp2(cap, sh, 0.35), B["delt"] * 0.95, col, outline=False, sheen=sheen)
+        c_ = _lerp2(cap, sh, 0.35)
+        r_ = B["delt"] * 0.95
+        if el is None:
+            fig.circle(g, c_, r_, col, outline=False, sheen=sheen)
+            return
+        # lágrima: redonda por el hombro y afilada brazo abajo, fundida con él (el disco era una rótula de muñeco)
+        dx, dy = _norm(el[0] - sh[0], el[1] - sh[1])
+        a0 = math.atan2(dy, dx)
+        P = [(c_[0] + math.cos(a0 + a) * r_, c_[1] + math.sin(a0 + a) * r_) for a in
+             [math.radians(v) for v in range(70, 291, 20)]]
+        P.append((c_[0] + dx * r_ * 1.9, c_[1] + dy * r_ * 1.9))
+        fig.poly(g, P, col, outline=False, sheen=sheen, smooth=2)
+        fig.merge_last()
 
     # ── piernas ──────────────────────────────────────────────────────────────
     bottom = lk["bottom"]
@@ -1372,7 +1410,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                          (hem[0] - nl2[0] * rb[1], hem[1] - nl2[1] * rb[1]), (b0[0] - nl2[0] * ra[1], b0[1] - nl2[1] * ra[1])],
                      shade(col, 0.96), sheen=sheen * 0.8, smooth=0)
         fig.m(mat, True)
-        dk = shade(col, 0.8)
+        dk = shade(col, 0.92)
         off = lambda p, n, d: (p[0] + n[0] * d, p[1] + n[1] * d)
         # corva: dos o tres pliegues que nacen del doblez, más largos cuanto más se dobla
         if flex > 0.25:
@@ -1387,10 +1425,10 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         lift = max(flex, 1.0 - abs(t1[1]))
         if lift > 0.3:
             fig.line(g, [off(_lerp2(H, kn, 0.18), nl1, s_in * r0 * 0.35), off(_lerp2(H, kn, 0.6), nl1, -s_in * rk * 0.15),
-                         off(_lerp2(H, kn, 0.92), nl1, -s_in * rk * 0.55)], shade(col, 0.84), 0.6)
+                         off(_lerp2(H, kn, 0.92), nl1, -s_in * rk * 0.55)], shade(col, 0.93), 0.6)
         # pliegue largo de caída en el muslo de apoyo
         if lift <= 0.3:
-            fig.line(g, [_lerp2(H, kn, 0.3), _lerp2(H, kn, 0.7)], shade(col, 0.84), 0.45)
+            fig.line(g, [_lerp2(H, kn, 0.3), _lerp2(H, kn, 0.7)], shade(col, 0.93), 0.45)
         # la tela se apila sobre el tobillo
         if stack:
             for u, w_ in ((0.72, 0.55), (0.84, 0.6)):
@@ -1639,7 +1677,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         # pliegues de la tela que responden al cuerpo: del cinturón a la axila del brazo que golpea (tensión),
         # de la espalda al hombro al levantar la guardia y abanico del faldón según la zancada y la velocidad
         fig.m("cloth", True)
-        fd_ = shade(jc, 0.8)
+        fd_ = shade(jc, 0.93)                # el surco ya oscurece: un color más oscuro encima lo hacía un tajo
         ua_, fa_ = B.get("arm", (30.0, 25.5))
         sh_f, hd_f = max(((J["sh_" + sd], J["hd_" + sd]) for sd in ("l", "r")), key=lambda p_: dist(*p_))
         reach = clamp((dist(sh_f, hd_f) / (ua_ + fa_) - 0.5) / 0.45, 0.0, 1.0)
@@ -1650,7 +1688,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             e_ = _lerp2(a_, sh_f, 0.45 + 0.25 * reach)
             m_ = _lerp2(a_, e_, 0.5)
             sag = 1.2 * (1.0 - reach)
-            fig.line(4, [a_, (m_[0] - nx * sag, m_[1] - ny * sag), e_], shade(jc, 0.82 - 0.06 * reach), w_ * (0.7 + 0.6 * reach))
+            fig.line(4, [a_, (m_[0] - nx * sag, m_[1] - ny * sag), e_], shade(jc, 0.93 - 0.04 * reach), w_ * (0.7 + 0.6 * reach))
         raise_ = clamp((sh_f[1] - hd_f[1]) / 25.0, 0.0, 1.0)
         fig.line(4, [S(0.7, -wb(0.7) * 0.5), S(0.4 - 0.08 * raise_, -wb(0.4) * (0.2 + 0.2 * raise_))], fd_, 0.4 + 0.2 * raise_)
         if top != "keikogi":
@@ -1706,9 +1744,12 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             ln_ = 24 + 12 * dish
             e1 = (knot[0] + 2 + sw, knot[1] + ln_)
             e2 = (knot[0] + 6 + sw * 0.7, knot[1] + ln_ * 0.9)
-            fig.tube(4, knot, e1, 1.6, 1.5, bc, sheen=0.5)
-            fig.tube(4, knot, e2, 1.6, 1.5, bc, sheen=0.5)
-            fig.circle(4, knot, 2.4, bc, sheen=0.6)
+            # puntas planas que cuelgan del nudo, cada una con su media vuelta
+            fig.strap(4, [knot, (knot[0] + 0.5 + sw * 0.35, knot[1] + ln_ * 0.5), e1], 3.6, bc, twist=0.55, sheen=0.5, edge=True)
+            fig.strap(4, [knot, (knot[0] + 4.0 + sw * 0.3, knot[1] + ln_ * 0.45), e2], 3.6, shade(bc, 0.92), twist=-0.4,
+                      sheen=0.5, edge=True)
+            fig.poly(4, [(knot[0] - 2.6, knot[1] - 1.6), (knot[0] + 2.4, knot[1] - 2.0), (knot[0] + 2.8, knot[1] + 1.8),
+                         (knot[0] - 2.2, knot[1] + 2.2)], bc, sheen=0.6, smooth=1)                                  # nudo
             if lk.get("belt_style") == "deshilachado":
                 for e in (e1, e2):
                     for d in (-1.0, 0.0, 1.0):
@@ -1779,7 +1820,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         fig.m("satin")
         top_ = S(0.16, wf(0.16) + 2.0)
         bot_ = S(-0.12, wf(-0.1) + 1.0)
-        fig.tube(4, top_, bot_, 3.2, 2.6, mc, sheen=1.6)
+        fig.strap(4, [top_, _lerp2(top_, bot_, 0.5), bot_], 6.0, mc, sheen=1.6, edge=True)
         sw = sec.spring("sagari", math.sin(t_anim * 3) * 0.6 + clamp(-hip_vx * 1.2, -5.0, 5.0), 0.12, 0.85)
         for i in range(7):
             p = S(0.02, wf(0.02) + 2.4 - i * 1.6)
@@ -1814,7 +1855,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                     p0 = S(0.2, wf(0.2) * (1 - 2 * u) - (wb(0.2) * (2 * u - 1) if u > 0.5 else 0))
                     p1 = _lerp2(_lerp2(hem[0], hem[1], 0.15 + 0.7 * u), (hcx, hcy), 0.12)
                     # tabla: valle oscuro y, al lado, el canto planchado que coge la luz
-                    fig.line(4, [p0, p1], shade(hc, 0.7), 0.45)
+                    fig.line(4, [p0, p1], shade(hc, 0.82), 0.45)
                     fig.m("cloth")
                     fig.line(4, [(p0[0] + 1.0, p0[1]), (p1[0] + 1.4, p1[1])], mixc(shade(hc, 1.5), (150, 150, 168), 0.22), 0.35)
                     fig.m("cloth", True)
@@ -1865,14 +1906,25 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
     fig.m("skin")
     neck_end = HP(-0.2, 0.5)
     nr = B["neck"] * (1.0 if lk["body"] in ("atleta_f", "menuda") else 1.12)
-    fig.tube(5, N, neck_end, nr * 1.12, nr, C(skin, N[0]), sheen=skin_sheen)
+    # cuello con forma, no tubo: nace ancho en el trapecio y la clavícula, se estrecha en la garganta y en la
+    # nuca (dos curvas cóncavas) y se mete bajo la mandíbula y el occipital
+    fx_, fy_ = _norm(HP(1.0, 0.0)[0] - HP(0.0, 0.0)[0], HP(1.0, 0.0)[1] - HP(0.0, 0.0)[1])
+    tf, tb = HP(0.42, 0.62), HP(-0.6, 0.36)
+    bf = (N[0] + fx_ * nr * 1.25, N[1] + fy_ * nr * 1.25)
+    bb = (N[0] - fx_ * nr * 1.55, N[1] - fy_ * nr * 1.55)
+    mf = _lerp2(tf, bf, 0.5)
+    mb = _lerp2(tb, bb, 0.5)
+    mf = (mf[0] - fx_ * nr * 0.18, mf[1] - fy_ * nr * 0.18)
+    mb = (mb[0] + fx_ * nr * 0.22, mb[1] + fy_ * nr * 0.22)
+    fig.poly(5, [tb, HP(-0.1, 0.2), tf, mf, bf, bb, mb], C(skin, N[0]), sheen=skin_sheen, smooth=2)
     # esternocleidomastoideo: de detrás de la oreja al esternón, el músculo que da cuello de luchador
     fig.bump(5, _lerp2(HP(-0.05, 0.42), N, 0.45), dist(HP(-0.05, 0.42), N) * 0.5, nr * 0.32,
              math.atan2(N[1] - HP(-0.05, 0.42)[1], N[0] - HP(-0.05, 0.42)[0]), 4, skin_sheen)
     if lk["body"] not in ("atleta_f", "menuda"):
         fig.bump(5, _lerp2(HP(0.35, 0.72), N, 0.35), nr * 0.3, nr * 0.22, 0.0, 3, skin_sheen)            # nuez
     if lk["body"] == "sumo":
-        fig.tube(5, N, HP(0.3, 0.8), nr * 1.1, nr * 0.9, C(skin, N[0]), sheen=skin_sheen)
+        fig.poly(5, [HP(0.5, 0.7), HP(0.2, 1.0), (N[0] + fx_ * nr * 1.5, N[1] + fy_ * nr * 1.5), N], C(skin, N[0]),
+                 sheen=skin_sheen, smooth=2)                                                                 # papada del sumo
     # impacto: los primeros fotogramas del golpe aplastan la mejilla y empujan la mandíbula hacia atrás
     hitk = 0.0
     if f.state in (Fighter.HIT, Fighter.STUN) and f.timer < 10:
@@ -2192,13 +2244,14 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
         for q in ring[1:-1]:
             fig.dot(5, q, 0.07 * R, shade(mc, 0.75))
         tail = HP(-1.0, -0.42)
-        fig.line(5, [tail, HP(-1.35 - sw_h, 0.1), HP(-1.45 - sw_h * 1.5, 0.55)], mc, 0.1 * R)
+        fig.strap(5, [tail, HP(-1.35 - sw_h, 0.1), HP(-1.45 - sw_h * 1.5, 0.55)], 0.2 * R, mc, twist=0.5, sheen=0.8)
     fig.m("cloth")
     if getattr(f, "state", None) == Fighter.INTRO and fd["id"] == "matias" and f.timer < 90:
         # pañuelo albiceleste al cuello, que lanza al público al empezar
         sc_ = C("#75AADB", N[0])
         fig.poly(5, [S(1.0, wf(1.0) + 2.5), S(1.0, -wb(1.0) - 2.5), _lerp2(S(1.0, -wb(1.0)), Hd, 0.2), _lerp2(S(1.0, wf(1.0)), Hd, 0.2)], sc_)
-        fig.tube(5, S(0.98, wf(0.98) + 2), (S(0.98, wf(0.98))[0] + 4 + sw_h * 20, S(0.98, 0)[1] + 22), 2.4, 2.0, sc_, sheen=1.2)
+        fig.strap(5, [S(0.98, wf(0.98) + 2), (S(0.98, wf(0.98))[0] + 2 + sw_h * 10, S(0.98, 0)[1] + 11),
+                      (S(0.98, wf(0.98))[0] + 4 + sw_h * 20, S(0.98, 0)[1] + 22)], 4.4, sc_, twist=0.6, sheen=1.2)
         fig.line(5, [S(0.98, wf(0.98) + 2), (S(0.98, wf(0.98))[0] + 4 + sw_h * 20, S(0.98, 0)[1] + 22)], C("#FFFFFF", N[0]), 0.7)
 
     # ── desgaste del combate: marcas de los golpes, gotas de sudor y pelo revuelto ──
@@ -2330,7 +2383,7 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             kl_, kr_ = bend_sides(sh, el, hd, inner, outer)
             fig.ribbon(g, [cap, sh, el, cut], kl_, kr_, slc, sheen=0.5, edge=True)
             if side == "r":
-                shoulder_patch(g, J["sh_r"], cap)
+                shoulder_patch(g, J["sh_r"], cap, el)
             # puño de la manga: refuerzo con pespuntes
             fig.m("cloth", pat="stitch")
             c0 = _lerp2(el, cut, 0.84)
@@ -2351,12 +2404,13 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
                     pb = _lerp2(sh, el, q0 + 0.3)
                     rr_ = up1 + 1.6
                     fig.line(g, [(pa[0] + nx_ * rr_ * 0.7, pa[1] + ny_ * rr_ * 0.7), (pb[0] - nx_ * rr_ * 0.5, pb[1] - ny_ * rr_ * 0.5)],
-                             shade(slc, 0.84), 0.45 * tw)
+                             shade(slc, 0.93), 0.4 * tw)
             if bend > 0.12:
                 for o_, w_ in ((0.45, 0.8), (0.15, 0.6)):
                     off = (nx_ * sgn * up1 * o_, ny_ * sgn * up1 * o_)
                     fig.line(g, [(p_[0] + off[0], p_[1] + off[1]) for p_ in
-                                 (_lerp2(sh, el, 1.0 - 0.3 * bend), el, _lerp2(el, cut, 0.25 * bend))], shade(slc, 0.8), w_ * (0.5 + 0.5 * bend))
+                                 (_lerp2(sh, el, 1.0 - 0.22 * bend), _lerp2(el, sh, 0.04), _lerp2(el, cut, 0.18 * bend))],
+                             shade(slc, 0.92), w_ * (0.35 + 0.35 * bend))
             if top == "changshan":
                 fig.m("cloth")
                 fig.line(g, [_lerp2(el, cut, 0.9), cut], C(lk["accent"], el[0], depth), 0.5)
@@ -2376,8 +2430,9 @@ def build_figure(f, pose, rig, mono=False, raw=False) -> Figure:
             dtip = _lerp2(sh, el, 0.45)
             fig.ribbon(g, [cap, sh, dtip], [(0, B["delt"] * 0.6), (0.35, B["delt"] * 0.92), (1, up0 * 0.55)],
                        [(0, B["delt"] * 0.55), (0.35, B["delt"] * 0.85), (1, up0 * 0.5)], arm_c, sheen=skin_sheen)
+            fig.merge_last()                 # un volumen con el brazo, no una bola encima
             if side == "r" and top == "none":
-                shoulder_patch(g, J["sh_r"], cap)
+                shoulder_patch(g, J["sh_r"], cap, el)
             fig.gloss(g, _lerp2(cap, sh, 0.7), B["delt"] * 0.45, 2.4 + 2.0 * sweat)       # brillo del hombro
             fig.m("skin", True)
             cr = (el[0] - sh[0]) * (hd[1] - el[1]) - (el[1] - sh[1]) * (hd[0] - el[0])

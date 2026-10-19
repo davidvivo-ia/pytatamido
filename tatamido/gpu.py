@@ -327,13 +327,13 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         float v = vis(0.8, pxcm);
         float t = hash12(floor(c) + seed);
         float zone = 0.55 + 0.45 * smoothstep(0.3, 0.7, vnoise(q * 0.07 + seed));   // el grano se marca más donde tira la tela
-        h = (grain * grain * 0.3 - 0.1) * v * zone + drape(q, seed, 1.25) * 0.5;
+        h = (grain * grain * 0.3 - 0.1) * v * zone + drape(q, seed, 1.25) * 0.85;
         ak = 1. + v * zone * (0.045 * grain - 0.025 + 0.015 * (t - 0.5));
         sk = mix(1., 0.7 + 0.4 * grain, v);
     } else if (pat == 2) {                           // sarga: costillas en diagonal
         float wale = bump1((q.x * 0.7 + q.y) / 1.1);
         float v = vis(1.1, pxcm);
-        h = wale * 0.2 * v + drape(q, seed, 1.0) * 0.5;
+        h = wale * 0.2 * v + drape(q, seed, 1.0) * 0.8;
         ak = 1. + v * (0.04 * wale - 0.02);
     } else if (pat == 3) {                           // lona de cesta: parejas de hilos que alternan
         vec2 c = q / 1.6;
@@ -342,13 +342,13 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         float rib = bump1(u * 2.);
         float e = smoothstep(0., 0.12, min(min(f.x, 1. - f.x), min(f.y, 1. - f.y)));
         float v = vis(0.8, pxcm);
-        h = (rib * e * 0.28 - 0.12) * v + drape(q, seed, 1.5) * 0.5;
+        h = (rib * e * 0.28 - 0.12) * v + drape(q, seed, 1.5) * 0.8;
         ak = 1. + v * (0.05 * rib * e - 0.03);
     } else if (pat == 4) {                           // punto de canalé
         float y = q.y / 0.9;
         float rib = bump1(y);
         float v = vis(0.9, pxcm);
-        h = rib * 0.25 * v + drape(q, seed, 0.8) * 0.4;
+        h = rib * 0.25 * v + drape(q, seed, 0.8) * 0.65;
         ak = 1. + v * (0.04 * rib - 0.02);
     } else if (pat == 5) {                           // damasco de seda: medallones tono sobre tono
         vec2 c = q / 8.;
@@ -373,7 +373,7 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         float slub = smoothstep(0.55, 0.8, vnoise(vec2(ri * 3.7, q.y * 0.22 + seed)));
         float warp = bump1(q.y / 1.3);
         float v = vis(1.1, pxcm);
-        h = (thread * 0.18 + warp * 0.08 + slub * 0.18) * v + drape(q, seed, 1.3) * 0.5;
+        h = (thread * 0.18 + warp * 0.08 + slub * 0.18) * v + drape(q, seed, 1.3) * 0.8;
         ak = 1. + v * (0.035 * (hash12(vec2(ri, seed + 3.)) - 0.5) + 0.03 * slub - 0.02 * (1. - thread));
     } else if (pat == 7 || pat == 16) {              // cinturón: pespuntes paralelos a lo largo
         float rows = q.y / 0.7;
@@ -385,9 +385,11 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
         ak = 1. - 0.2 * line * v;
         sk = 1. - 0.5 * line * v;
         if (pat == 16) {                             // cinturón negro gastado: asoma el alma clara
-            float n = fbm(vec2(q.x * 0.33, q.y * 1.15) + seed);
-            float edge = smoothstep(wcm * 0.22, wcm * 0.5, abs(q.y));
-            wear = 0.8 * smoothstep(0.52, 0.74, n + edge * 0.3);
+            // el negro se gasta en los cantos y en hebras largas a lo largo del cinturón: asoma el alma blanca
+            float edge = smoothstep(wcm * 0.3, wcm * 0.5, abs(q.y));
+            float streak = vnoise(vec2(q.x * 0.12 + seed, q.y * 3.2));
+            float fray = vnoise(vec2(q.x * 0.6, q.y * 6.0) + seed * 2.);
+            wear = 0.85 * smoothstep(0.6, 0.85, edge * 0.75 + streak * 0.45 + fray * 0.12) * (0.6 + 0.4 * fbm(q * 0.08 + seed));
         }
     } else if (pat == 8) {                           // satén y lycra: grandes pliegues que atrapan la luz
         h = drape(q, seed, 1.7) * 1.1;
@@ -432,8 +434,29 @@ void weave(int pat, vec2 q, float pxcm, float seed, float wcm, out float h, out 
     } else if (pat == 15) {                          // algodón de tafetán
         float wv = bump1(q.x / 0.9) * bump1(q.y / 0.9);
         float v = vis(0.9, pxcm);
-        h = wv * 0.15 * v + drape(q, seed, 1.1) * 0.5;
+        h = wv * 0.15 * v + drape(q, seed, 1.1) * 0.8;
         ak = 1. + v * (0.03 * wv - 0.015);
+    }
+    bool woven = pat == 1 || pat == 2 || pat == 3 || pat == 4 || pat == 6 || pat == 15;
+    if (woven) {
+        ak = 1. + (ak - 1.) * 1.8;                   // el tejido se lee (±3 % era ruido)
+        // tinte y lavado: la tela no es de un color plano; manchas amplias de 10-20 cm, más gastada en lo alto
+        ak *= 1. + 0.09 * (fbm(q * 0.06 + seed * 1.3) - 0.5);
+        // costura a lo largo de la pieza (manga, pernera, costado), con su pespunte a los dos lados
+        if (wcm > 5.) {
+            float sy = q.y - wcm * 0.28;
+            float vS = vis(0.45, pxcm);
+            float seam = 1. - smoothstep(0.06, 0.3, abs(sy));
+            float pucker = smoothstep(0.3, 0.8, abs(sy)) * (1. - smoothstep(0.8, 1.4, abs(sy)));
+            float dash = smoothstep(0.15, 0.3, fract(q.x / 0.55)) * (1. - smoothstep(0.65, 0.8, fract(q.x / 0.55)));
+            float stitch = (1. - smoothstep(0.03, 0.09, abs(abs(sy) - 0.5))) * dash;
+            h += (pucker * 0.14 - seam * 0.4) * vS;
+            ak *= 1. - (0.1 * seam + 0.14 * stitch) * vS;
+            sk *= 1. - 0.4 * seam * vS;
+        }
+    } else if (pat == 13) {
+        // piel: no es plástico; matices suaves de 2-6 cm (venillas, rojeces, zonas más pálidas)
+        ak = 1. + 0.07 * (fbm(q * 0.28 + seed) - 0.5);
     }
     // ── segunda octava: el hilo. Sólo aparece cuando hay píxeles para verlo (1440p, 4K, Modo Foto) ──
     float vf = vis(0.32, pxcm);
@@ -518,7 +541,7 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float hy = figH(p + vec2(0., e)) - figH(p - vec2(0., e));
     float bump = mat == 5 ? 5.0 : 7.0;
     // forma: cilindro de la anchura local real (campo de distancias); el pelo y las telas sueltas, menos
-    float round_ = mat == 5 ? 0.7 : mat == 6 ? 0. : 1.0;
+    float round_ = mat == 5 ? 0.7 : mat == 6 ? 0. : mat == 2 ? 0.8 : mat == 3 ? 0.85 : 1.0;   // la tela no es un tubo
     vec2 fs = formSlope(p) * round_;                       // pendiente de la forma
     // la altura desenfocada sólo aporta los escalones entre capas (brazo sobre torso)
     float e2 = 6.0 * uRS, l2 = 3.6 + LB();
@@ -580,8 +603,8 @@ vec3 litFighter(vec2 p, vec4 fg) {
     float br2 = vnoise(vec2(q.x * 0.45, q.y * 2.1) + seed * 5.7) * vis(0.5, pxcm);
     // ── rampa de dos tonos (anime 2026): borde pintado, sombra de color desplazado ──
     // la piel lleva un terminador más suave y casi sin pincelada: en una cara el borde roto se leía como suciedad
-    float soft = mat == 1 ? 0.22 : 0.12;
-    float term = ndl + paint * ((br - 0.5) * (mat == 1 ? 0.05 : 0.16) + (br2 - 0.25) * (mat == 1 ? 0.02 : 0.05));
+    float soft = mat == 1 ? 0.22 : mat == 2 || mat == 3 ? 0.16 : 0.12;
+    float term = ndl + paint * ((br - 0.5) * (mat == 1 ? 0.05 : mat == 2 || mat == 3 ? 0.09 : 0.16) + (br2 - 0.25) * (mat == 1 ? 0.02 : 0.05));
     float shadowSelf = mat == 6 ? 1. : selfShadow(p, L, pxcm);
     if (uDebugN > 1.5) return toLin(uDebugN > 2.5 ? vec3(fract(figHeight(p, 0.3 * pxcm) / (60. * pxcm))) : vec3(shadowSelf)) / max(uTint, vec3(0.05));
     float lit = smoothstep(-0.02 - soft, -0.02 + soft, term) * mix(1.0, ao, 0.6) * mix(1., shadowSelf, 0.9);
